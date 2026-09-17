@@ -1,0 +1,8 @@
+build*/
+settings.cfg
+*.bmp
+*.log
+__pycache__/
+songs/*
+!songs/.gitkeep
+!songs/First-Light/
