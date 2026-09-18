@@ -22,12 +22,12 @@ def seconds(tick):
     return tick / 192 * .5 if tick <= 6144 else 16 + (tick - 6144) / 192 * .4
 
 sync = '[SyncTrack]\n{\n  0 = B 120000\n  0 = TS 4\n  6144 = B 150000\n}\n'
-song = '[Song]\n{\n  Name = "First Light"\n  Artist = "Fretboard demo"\n  Resolution = 192\n  Offset = 0\n}\n'
+song = '[Song]\n{\n  Name = "First Light"\n  Artist = "Switch Hero demo"\n  Resolution = 192\n  Offset = 0\n}\n'
 track = '[ExpertSingle]\n{\n' + ''.join(f'  {t} = N {l} {n}\n' for t,l,n in notes)
 track += ''.join(f'  {t} = S 2 768\n' for t in [768,2304,3840,6912,8448]) + '}\n'
 easy = '[EasySingle]\n{\n' + ''.join(f'  {t} = N {l % 3} {n}\n' for t,l,n in notes if t % 384 == 0) + '}\n'
 (folder / 'notes.chart').write_text(song + sync + track + easy)
-(folder / 'song.ini').write_text('[song]\nname = First Light\nartist = Fretboard demo\ncharter = Original generated exercise\ndelay = 0\n')
+(folder / 'song.ini').write_text('[song]\nname = First Light\nartist = Switch Hero demo\ncharter = Original generated exercise\ndelay = 0\n')
 rate = 24000
 duration = seconds(64*192) + 2
 signal = [0.] * int(duration * rate)

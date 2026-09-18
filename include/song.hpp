@@ -51,6 +51,12 @@ struct Song {
 std::string lower(std::string s);
 std::string trim(std::string s);
 Song loadSong(const fs::path &folder);
+// Title and artist only, without parsing the chart: song libraries can hold
+// hundreds of songs and the list needs nothing else to draw.
+struct SongBrief {
+    std::string name, artist, error;
+};
+SongBrief peekSong(const fs::path &folder);
 std::vector<fs::path> scanSongs(const fs::path &root);
 std::string difficultyName(int difficulty);
 } // namespace fret

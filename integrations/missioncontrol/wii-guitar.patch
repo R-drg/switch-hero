@@ -1,0 +1,165 @@
+diff --git a/mc_mitm/source/controllers/wii_controller.cpp b/mc_mitm/source/controllers/wii_controller.cpp
+index 3580031..15c87e2 100644
+--- a/mc_mitm/source/controllers/wii_controller.cpp
++++ b/mc_mitm/source/controllers/wii_controller.cpp
+@@ -14,6 +14,7 @@
+  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ #include "wii_controller.hpp"
++#include "wii_guitar.hpp"
+ #include "controller_utils.hpp"
+ #include "../async/async.hpp"
+ #include <stratosphere.hpp>
+@@ -157,6 +158,15 @@ namespace ams::controller {
+             return;
+         }
+ 
++        if (m_extension == WiiExtensionController_Guitar) {
++            m_buttons.A = buttons->A;
++            m_buttons.Y = buttons->one;
++            m_buttons.minus = buttons->minus;
++            m_buttons.plus = buttons->plus;
++            m_buttons.home = buttons->home;
++            return;
++        }
++
+         if (m_orientation == WiiControllerOrientation_Horizontal) {
+             // Map dpad as left stick to increase compatibility with games not supporting movement via dpad
+             m_left_stick.SetData(
+@@ -228,6 +238,8 @@ namespace ams::controller {
+                 this->MapClassicControllerExtension(ext); break;
+             case WiiExtensionController_WiiUPro:
+                 this->MapWiiUProControllerExtension(ext); break;
++            case WiiExtensionController_Guitar:
++                this->MapGuitarExtension(ext); break;
+             case WiiExtensionController_TaTaCon:
+                 this->MapTaTaConExtension(ext); break;
+             case WiiExtensionController_BalanceBoard:
+@@ -241,6 +253,21 @@ namespace ams::controller {
+         }
+     }
+ 
++    void WiiController::MapGuitarExtension(const u8 ext[]) {
++        const auto guitar = fret::decodeWiiGuitar(ext, 6);
++        m_buttons.L  = (guitar.frets & 0x01) != 0;
++        m_buttons.ZL = (guitar.frets & 0x02) != 0;
++        m_buttons.R  = (guitar.frets & 0x04) != 0;
++        m_buttons.ZR = (guitar.frets & 0x08) != 0;
++        m_buttons.B  = (guitar.frets & 0x10) != 0;
++        m_buttons.dpad_up = guitar.up;
++        m_buttons.dpad_down = guitar.down;
++        m_buttons.dpad_left = guitar.left;
++        m_buttons.dpad_right = guitar.right;
++        m_buttons.plus |= guitar.plus;
++        m_buttons.X = guitar.minus;
++    }
++
+     void WiiController::MapNunchuckExtension(const u8 ext[]) {
+         auto extension_data = reinterpret_cast<const WiiNunchuckExtensionData *>(ext);
+ 
+@@ -455,13 +482,17 @@ namespace ams::controller {
+                     mp_status = this->GetMotionPlusStatus();
+ 
+                     if (!((mp_status == MotionPlusStatus_None) || (mp_status == MotionPlusStatus_Active))) {
+-                        if (mp_status == MotionPlusStatus_Uninitialised) {
+-                            R_TRY(this->InitializeMotionPlus());
+-                        }
++                        // A guitar has no MotionPlus passthrough format that can be
++                        // decoded, so leave MotionPlus alone while one is attached.
++                        if (this->GetExtensionControllerType() != WiiExtensionController_Guitar) {
++                            if (mp_status == MotionPlusStatus_Uninitialised) {
++                                R_TRY(this->InitializeMotionPlus());
++                            }
+ 
+-                        R_TRY(this->ActivateMotionPlus());
++                            R_TRY(this->ActivateMotionPlus());
+ 
+-                        R_SUCCEED();
++                            R_SUCCEED();
++                        }
+                     }
+                 }
+ 
+@@ -472,9 +503,11 @@ namespace ams::controller {
+                 }
+                 // Connected extension has changed
+                 if (m_extension != extension) {
++                    this->ClearControllerState();
+                     switch (extension) {
+                         case WiiExtensionController_Nunchuck:
+                         case WiiExtensionController_ClassicPro:
++                        case WiiExtensionController_Guitar:
+                         case WiiExtensionController_TaTaCon:
+                             m_orientation = WiiControllerOrientation_Vertical;
+                             R_TRY(this->SetReportMode(0x35));
+@@ -492,8 +525,19 @@ namespace ams::controller {
+                             m_orientation = WiiControllerOrientation_Horizontal;
+                             R_TRY(this->SetReportMode(0x35));
+                             break;
+-                        case WiiExtensionController_MotionPlusNunchuckPassthrough:
+                         case WiiExtensionController_MotionPlusClassicControllerPassthrough:
++                            // Guitars report through the classic passthrough slot but
++                            // in their own layout, so turn MotionPlus off for them.
++                            R_TRY(this->InitializeStandardExtension()); // deactivates MotionPlus
++                            if (this->GetExtensionControllerType() == WiiExtensionController_Guitar) {
++                                extension = WiiExtensionController_Guitar;
++                            } else {
++                                R_TRY(this->ActivateMotionPlusClassicPassthrough());
++                            }
++                            m_orientation = WiiControllerOrientation_Vertical;
++                            R_TRY(this->SetReportMode(0x35));
++                            break;
++                        case WiiExtensionController_MotionPlusNunchuckPassthrough:
+                             m_orientation = WiiControllerOrientation_Vertical;
+                             R_TRY(this->SetReportMode(0x35));
+                             break;
+@@ -517,6 +561,12 @@ namespace ams::controller {
+                             // Set appropriate passthrough MotionPlus mode
+                             if (extension == WiiExtensionController_Nunchuck) {
+                                 R_TRY(this->ActivateMotionPlusNunchuckPassthrough());
++                            } else if (extension == WiiExtensionController_Guitar) {
++                                // Leave MotionPlus deactivated so the guitar keeps
++                                // reporting its own six-byte extension format.
++                                m_extension = WiiExtensionController_Guitar;
++                                m_orientation = WiiControllerOrientation_Vertical;
++                                R_TRY(this->SetReportMode(0x35));
+                             } else {
+                                 R_TRY(this->ActivateMotionPlusClassicPassthrough());
+                             }
+@@ -547,6 +597,7 @@ namespace ams::controller {
+                 auto mp_status = this->GetMotionPlusStatus();
+ 
+                 if ((mp_status == MotionPlusStatus_None) || !m_enable_motion) {
++                    this->ClearControllerState();
+                     m_extension = WiiExtensionController_None;
+                     m_orientation = WiiControllerOrientation_Horizontal;
+                     R_TRY(this->SetReportMode(0x31));
+@@ -584,6 +635,8 @@ namespace ams::controller {
+                     return WiiExtensionController_MotionPlusNunchuckPassthrough;
+                 case 0xA4200705:
+                     return WiiExtensionController_MotionPlusClassicControllerPassthrough;
++                case 0xA4200103:
++                    return WiiExtensionController_Guitar;
+                 case 0xa4200111:
+                     return WiiExtensionController_TaTaCon;
+                 case 0xA4200402:
+diff --git a/mc_mitm/source/controllers/wii_controller.hpp b/mc_mitm/source/controllers/wii_controller.hpp
+index 66133fb..f61411a 100644
+--- a/mc_mitm/source/controllers/wii_controller.hpp
++++ b/mc_mitm/source/controllers/wii_controller.hpp
+@@ -38,6 +38,7 @@ namespace ams::controller {
+         WiiExtensionController_MotionPlus,
+         WiiExtensionController_MotionPlusNunchuckPassthrough,
+         WiiExtensionController_MotionPlusClassicControllerPassthrough,
++        WiiExtensionController_Guitar,
+         WiiExtensionController_TaTaCon,
+         WiiExtensionController_BalanceBoard,
+         WiiExtensionController_Unrecognised,
+@@ -521,6 +522,7 @@ namespace ams::controller {
+             void MapNunchuckExtension(const u8 ext[]);
+             void MapClassicControllerExtension(const u8 ext[]);
+             void MapWiiUProControllerExtension(const u8 ext[]);
++            void MapGuitarExtension(const u8 ext[]);
+             void MapTaTaConExtension(const u8 ext[]);
+             void MapBalanceBoardExtension(const u8 ext[]);
+             void MapMotionPlusExtension(const u8 ext[]);

@@ -591,7 +591,11 @@ static void audioFiles(Song &s) {
                     p = findFile(s.folder, rel.filename().string());
             }
         }
-        if (!p.empty() && fs::is_regular_file(p) && seen.insert(fs::weakly_canonical(p)).second)
+        // libstdc++'s canonicalization rejects libnx device paths such as
+        // "sdmc:/switch/...". All candidates are already constrained to the
+        // song folder above, so lexical normalization is sufficient for stem
+        // deduplication and does not require a host filesystem interpretation.
+        if (!p.empty() && fs::is_regular_file(p) && seen.insert(p.lexically_normal()).second)
             s.audio.push_back(p);
     }
     if (s.audio.empty())
@@ -618,6 +622,47 @@ Song loadSong(const fs::path &folder) {
     finish(s, raw);
     audioFiles(s);
     return s;
+}
+SongBrief peekSong(const fs::path &folder) {
+    SongBrief brief;
+    brief.name = folder.filename().string();
+    Song probe;
+    probe.folder = folder;
+    const bool midi = !findFile(folder, "notes.mid").empty();
+    if (!midi && findFile(folder, "notes.chart").empty()) {
+        brief.error = "Expected notes.chart or notes.mid";
+        return brief;
+    }
+    ini(probe); // song.ini carries the display metadata for nearly every song
+    auto meta = [&](const char *k) {
+        auto it = probe.metadata.find(k);
+        return it == probe.metadata.end() ? std::string() : trim(it->second);
+    };
+    brief.name = meta("name").empty() ? brief.name : meta("name");
+    brief.artist = meta("artist");
+    if (!midi && (meta("name").empty() || brief.artist.empty())) {
+        // No usable ini: read just the chart's [Song] block, not its notes.
+        std::ifstream f(folder / findFile(folder, "notes.chart").filename());
+        std::string line, section;
+        while (std::getline(f, line)) {
+            line = trim(line);
+            if (!line.empty() && line[0] == '[') {
+                if (!section.empty())
+                    break; // past the header block
+                section = lower(line);
+                continue;
+            }
+            auto eq = line.find('=');
+            if (section != "[song]" || eq == std::string::npos)
+                continue;
+            const std::string key = lower(trim(line.substr(0, eq))), value = unquote(line.substr(eq + 1));
+            if (key == "name" && meta("name").empty() && !value.empty())
+                brief.name = value;
+            if (key == "artist" && brief.artist.empty())
+                brief.artist = value;
+        }
+    }
+    return brief;
 }
 std::vector<fs::path> scanSongs(const fs::path &root) {
     std::set<fs::path> dirs;

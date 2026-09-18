@@ -1,0 +1,93 @@
+#pragma once
+// Switch Hero's visual kit: a 2000s older-brother's-bedroom rock look built from
+// baked procedural textures (grip tape, duct tape, brushed metal, chrome gems,
+// fire) and pre-rasterised TTF fonts. Everything draws in 1280x720 logical units.
+#include "song.hpp"
+#include <SDL.h>
+#include <array>
+#include <string>
+
+namespace fret::look {
+constexpr int W = 1280, H = 720;
+extern SDL_Renderer *renderer;
+
+namespace ink {
+const SDL_Color white = {236, 236, 240, 255}, dim = {150, 150, 162, 255}, faint = {90, 90, 102, 255},
+                acid = {168, 255, 62, 255}, blood = {226, 32, 44, 255}, crt = {70, 150, 255, 255},
+                marker = {18, 18, 22, 255}, chrome = {250, 250, 255, 255}, steel = {120, 124, 136, 255},
+                power = {90, 200, 255, 255};
+}
+// Fret lane colours (green, red, yellow, blue, orange, open).
+extern const std::array<SDL_Color, 6> lanes;
+
+void init(SDL_Renderer *r);
+void rebuild(); // after SDL_RENDER_DEVICE_RESET / SDL_RENDER_TARGETS_RESET
+void shutdown();
+
+enum class Face { Stencil, Marker, Body };
+enum class Align { Left, Center, Right };
+struct Style {
+    Face face = Face::Body;
+    float size = 24;                  // cap-to-descender pixel size
+    SDL_Color top = ink::white, bottom = ink::white; // vertical gradient
+    SDL_Color outline{0, 0, 0, 0};
+    float outlineWidth = 0;
+    SDL_Color glow{0, 0, 0, 0};       // soft halo (black makes a drop shadow)
+    float glowSpread = 1;
+    float shear = 0;                  // italic slant
+    float angle = 0;                  // degrees, around the anchor point
+    float wobble = 0;                 // per-letter handwriting tilt, degrees
+    float tracking = 0;
+    Align align = Align::Left;
+    float maxWidth = 0;               // truncate with "..." when set
+};
+float measure(const std::string &s, Face face, float size, float tracking = 0);
+void text(float x, float y, const std::string &s, const Style &style);
+
+// Primitives.
+void rect(float x, float y, float w, float h, SDL_Color c);
+void quad(SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, SDL_FPoint d, SDL_Color ca, SDL_Color cb, SDL_Color cc,
+          SDL_Color cd);
+void quad(SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, SDL_FPoint d, SDL_Color col);
+void thickLine(float x1, float y1, float x2, float y2, float width, SDL_Color c);
+void disc(float cx, float cy, float rx, float ry, SDL_Color inner, SDL_Color outer, int segments = 40);
+void glow(float x, float y, float w, float h, SDL_Color c); // additive soft light
+SDL_Color mix(SDL_Color a, SDL_Color b, float t);
+SDL_Color alpha(SDL_Color c, float a);
+float hash01(uint32_t v);
+
+// Set pieces.
+void wall(double time, SDL_Color light); // grungy wall, CRT light, dust
+// Vignette, scanlines and film grain over the finished frame. Call last, once,
+// after every other draw: the grade has to fall across the whole image for it to
+// look like one photograph instead of stacked layers.
+void grade(double time);
+void tape(float cx, float cy, float w, float h, float angleDeg, float shade = 1);
+void plate(float x, float y, float w, float h); // brushed metal panel with screws
+void burnedCd(float cx, float cy, float r, double time);
+// Album art, if the song folder ships any. Returns null when there is none.
+SDL_Texture *loadArtwork(const fs::path &folder);
+void photo(SDL_Texture *art, float cx, float cy, float size, float angleDeg, float shade = 1);
+void sticker(float cx, float cy, float r, float angleDeg, SDL_Color fill, const std::string &label);
+void star(float cx, float cy, float r, float angleDeg, SDL_Color fill, SDL_Color edge);
+void button(float x, float y, const std::string &glyph, const std::string &label); // controller hint
+void ledMeter(float x, float y, float w, float h, int segments, float fill, bool active, double time);
+// Rock meter: a vertical red/amber/green gauge with a chrome needle.
+void rockMeter(float x, float y, float w, float h, float value, double time, bool danger);
+
+// Highway pieces.
+enum GemStyle { GemNormal, GemHopo, GemStar, GemStarHopo, GemStyles };
+constexpr size_t PowerColor = 5;
+// Top face centre at (x, y) with face width w.
+void gem(size_t color, GemStyle style, float x, float y, float w, Uint8 alpha);
+void receptor(size_t lane, float x, float y, float w, bool pressed, bool power);
+void gripTape(const std::array<SDL_FPoint, 4> &corners, float v0, float v1, SDL_Color tint);
+struct Fire {
+    float x;
+    int lane;
+    double age; // seconds since the note was hit
+    bool sustain;
+    uint32_t seed;
+};
+void fire(const Fire &f, float strike, double time, bool power);
+} // namespace fret::look

@@ -1,0 +1,244 @@
+#include "downloader.hpp"
+#include <cstdio>
+#include <curl/curl.h>
+#include <stdexcept>
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
+
+namespace fret {
+namespace fs = std::filesystem;
+namespace {
+constexpr int perPage = 25;
+const char *const userAgent = "switch-hero/0.1 (homebrew rhythm game)";
+
+// Sockets are only brought up once the download screen is first opened, so
+// players who never use it pay nothing for them.
+struct Network {
+    Network() {
+#ifdef __SWITCH__
+        if (R_FAILED(socketInitializeDefault()))
+            throw std::runtime_error("Could not start networking");
+#endif
+        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+#ifdef __SWITCH__
+            socketExit();
+#endif
+            throw std::runtime_error("Could not start networking");
+        }
+    }
+    ~Network() {
+        curl_global_cleanup();
+#ifdef __SWITCH__
+        socketExit();
+#endif
+    }
+};
+
+struct Handle {
+    CURL *curl = curl_easy_init();
+    curl_slist *headers = nullptr;
+    char error[CURL_ERROR_SIZE] = {};
+    Handle() {
+        if (!curl)
+            throw std::runtime_error("Could not start networking");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+        curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
+        // Give up on a transfer that stalls for 30 s rather than hanging forever.
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
+    }
+    ~Handle() {
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+    }
+    // Runs the transfer and turns every failure into a readable message.
+    void perform() {
+        const CURLcode code = curl_easy_perform(curl);
+        if (code == CURLE_ABORTED_BY_CALLBACK)
+            throw std::runtime_error("Cancelled");
+        if (code != CURLE_OK)
+            throw std::runtime_error(code == CURLE_COULDNT_RESOLVE_HOST || code == CURLE_COULDNT_CONNECT
+                                         ? std::string("No connection - is the console online?")
+                                         : std::string("Network error: ") + (error[0] ? error : curl_easy_strerror(code)));
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        // The search endpoint answers 201 Created on success.
+        if (status < 200 || status >= 300)
+            throw std::runtime_error("Server said " + std::to_string(status));
+    }
+};
+
+size_t toString(char *data, size_t size, size_t count, void *out) {
+    static_cast<std::string *>(out)->append(data, size * count);
+    return size * count;
+}
+size_t toFile(char *data, size_t size, size_t count, void *out) {
+    return std::fwrite(data, size, count, static_cast<FILE *>(out)) * size;
+}
+} // namespace
+
+Downloader::Downloader(std::filesystem::path root) : library(std::move(root)) { worker = std::thread([this] { run(); }); }
+Downloader::~Downloader() {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stopping = true;
+        cancelled = true;
+    }
+    wake.notify_all();
+    worker.join();
+}
+
+void Downloader::search(const std::string &query) {
+    std::lock_guard<std::mutex> lock(mutex);
+    pending = {Job::Kind::Search, query, 1, {}};
+    state.query = query;
+    state.results.clear();
+    state.found = 0, state.page = 0;
+    state.error.clear();
+    wake.notify_all();
+}
+void Downloader::nextPage() {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (state.state != State::Idle || pending.kind != Job::Kind::None || !state.more())
+        return;
+    pending = {Job::Kind::Search, state.query, state.page + 1, {}};
+    wake.notify_all();
+}
+void Downloader::download(const enchor::Chart &chart) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (state.state == State::Downloading)
+        return;
+    pending = {Job::Kind::Download, {}, 0, chart};
+    cancelled = false;
+    state.error.clear();
+    wake.notify_all();
+}
+void Downloader::cancel() { cancelled = true; }
+Downloader::View Downloader::view() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return state;
+}
+bool Downloader::inLibrary(const enchor::Chart &chart) const {
+    std::error_code ec;
+    return fs::is_directory(library / enchor::folderName(chart), ec);
+}
+
+void Downloader::run() {
+    std::unique_ptr<Network> network;
+    while (true) {
+        Job job;
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            wake.wait(lock, [&] { return stopping || pending.kind != Job::Kind::None; });
+            if (stopping)
+                return;
+            job = std::move(pending);
+            pending = {};
+            state.state = job.kind == Job::Kind::Search ? State::Searching : State::Downloading;
+            state.status = job.kind == Job::Kind::Search ? "searching" : "connecting";
+            state.progress = 0, state.megabytes = 0;
+        }
+        try {
+            if (!network)
+                network = std::make_unique<Network>();
+            if (job.kind == Job::Kind::Search)
+                runSearch(job);
+            else
+                runDownload(job);
+        } catch (const std::exception &e) {
+            std::lock_guard<std::mutex> lock(mutex);
+            state.error = cancelled && job.kind == Job::Kind::Download ? "Download cancelled" : e.what();
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        state.state = State::Idle;
+        state.status.clear();
+    }
+}
+
+void Downloader::runSearch(const Job &job) {
+    Handle h;
+    const std::string body = enchor::searchBody(job.query, job.page, perPage);
+    std::string response;
+    h.headers = curl_slist_append(h.headers, "Content-Type: application/json");
+    curl_easy_setopt(h.curl, CURLOPT_URL, enchor::searchUrl);
+    curl_easy_setopt(h.curl, CURLOPT_HTTPHEADER, h.headers);
+    curl_easy_setopt(h.curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(h.curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(h.curl, CURLOPT_WRITEFUNCTION, toString);
+    curl_easy_setopt(h.curl, CURLOPT_WRITEDATA, &response);
+    try {
+        h.perform();
+    } catch (const std::runtime_error &) {
+        // A rejected query still explains itself in the body.
+        if (!response.empty())
+            enchor::parseSearch(response);
+        throw;
+    }
+    auto page = enchor::parseSearch(response);
+    std::lock_guard<std::mutex> lock(mutex);
+    // A newer search may have started while this one was in flight.
+    if (state.query != job.query)
+        return;
+    if (job.page == 1)
+        state.results.clear();
+    state.results.insert(state.results.end(), page.charts.begin(), page.charts.end());
+    state.found = page.found;
+    state.page = job.page;
+}
+
+void Downloader::runDownload(const Job &job) {
+    const fs::path temp = library / ".switch-hero-download.sng";
+    std::error_code ec;
+    fs::create_directories(library, ec);
+    FILE *file = std::fopen(temp.string().c_str(), "wb");
+    if (!file)
+        throw std::runtime_error("Cannot write to the songs folder");
+    struct Progress {
+        Downloader *self;
+    } progress{this};
+    try {
+        Handle h;
+        const std::string url = enchor::downloadUrl(job.chart);
+        curl_easy_setopt(h.curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(h.curl, CURLOPT_WRITEFUNCTION, toFile);
+        curl_easy_setopt(h.curl, CURLOPT_WRITEDATA, file);
+        curl_easy_setopt(h.curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(h.curl, CURLOPT_XFERINFODATA, &progress);
+        curl_easy_setopt(
+            h.curl, CURLOPT_XFERINFOFUNCTION,
+            +[](void *data, curl_off_t total, curl_off_t now, curl_off_t, curl_off_t) -> int {
+                auto *self = static_cast<Progress *>(data)->self;
+                std::lock_guard<std::mutex> lock(self->mutex);
+                self->state.status = "downloading";
+                self->state.megabytes = double(now) / (1024 * 1024);
+                self->state.progress = total > 0 ? float(double(now) / double(total)) : 0;
+                return self->cancelled ? 1 : 0;
+            });
+        h.perform();
+        if (std::fclose(file) != 0) {
+            file = nullptr;
+            throw std::runtime_error("Could not write to the SD card");
+        }
+        file = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            state.status = "unpacking";
+            state.progress = 1;
+        }
+        const auto name = enchor::folderName(job.chart);
+        enchor::unpackSng(temp, library / name);
+        fs::remove(temp, ec);
+        std::lock_guard<std::mutex> lock(mutex);
+        ++state.downloads;
+        state.lastFolder = name;
+    } catch (...) {
+        if (file)
+            std::fclose(file);
+        fs::remove(temp, ec);
+        throw;
+    }
+}
+} // namespace fret

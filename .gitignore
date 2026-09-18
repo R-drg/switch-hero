@@ -6,3 +6,7 @@ __pycache__/
 songs/*
 !songs/.gitkeep
 !songs/First-Light/
+.DS_Store
+
+# Old prototype build and personal song copies: too big for git, and not ours to ship.
+fretboard/
