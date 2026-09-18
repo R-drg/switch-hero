@@ -101,7 +101,6 @@ std::vector<Uint8> readFile(const std::string &name) {
 #ifdef __SWITCH__
     candidates.push_back("romfs:/fonts/" + name);
     candidates.push_back("sdmc:/switch/switch-hero/fonts/" + name);
-    candidates.push_back("sdmc:/switch/fretboard/fonts/" + name);
 #else
     candidates.push_back("assets/fonts/" + name);
     if (char *base = SDL_GetBasePath()) {

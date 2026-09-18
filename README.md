@@ -17,7 +17,7 @@ benchmark.
 
 ```bash
 sudo apt update
-sudo apt install build-essential cmake libsdl2-dev libsndfile1-dev python3 ffmpeg
+sudo apt install build-essential cmake libsdl2-dev libsndfile1-dev libcurl4-openssl-dev python3 ffmpeg
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
@@ -39,7 +39,7 @@ Install the official devkitPro toolchain using its installation documentation:
 In an environment with devkitPro's `dkp-pacman` configured, install:
 
 ```bash
-sudo dkp-pacman -S --needed switch-dev switch-sdl2 switch-libvorbis switch-opusfile switch-mpg123
+sudo dkp-pacman -S --needed switch-dev switch-sdl2 switch-libvorbis switch-opusfile switch-mpg123 switch-curl
 bash tools/build-switch.sh
 ```
 
@@ -49,7 +49,7 @@ place of `dkp-pacman`. The build script expects CMake on PATH and defaults
 
 The intended output is `build-switch/switch-hero.nro`. Once successfully built:
 
-- Put the NRO in `sd:/switch/switch-hero/` (an existing `sd:/switch/fretboard/` still works).
+- Put the NRO in `sd:/switch/switch-hero/`.
 - Put extracted song folders in `sd:/switch/switch-hero/songs/`.
 - Launch through your existing homebrew setup with full application memory.
 - Settings are stored at `sd:/switch/switch-hero/settings.cfg`.
@@ -69,9 +69,10 @@ song's title and artist (from `song.ini`, or the chart header when there is no
 ini); the chart itself is parsed when you select a song, and problems with a
 song are reported then.
 
-Switch Hero reads songs from `sd:/switch/switch-hero/songs`. An existing
-`sd:/switch/fretboard/` folder from before the rename is still used when the
-new one is absent, so nothing has to be moved.
+Switch Hero reads songs from `sd:/switch/switch-hero/songs`. If you ran the
+prototype when it was called Fretboard, move your songs and `settings.cfg`
+from `sd:/switch/fretboard/` to `sd:/switch/switch-hero/`, then delete the old
+folder so the Homebrew Menu only lists Switch Hero.
 
 ### Downloading charts
 

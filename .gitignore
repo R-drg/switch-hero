@@ -8,5 +8,8 @@ songs/*
 !songs/First-Light/
 .DS_Store
 
-# Old prototype build and personal song copies: too big for git, and not ours to ship.
-fretboard/
+# The release ships only the demo song; other charts are personal copies of
+# commercial music and stay out of this public repo.
+release/switch-hero/songs/*
+!release/switch-hero/songs/.gitkeep
+!release/switch-hero/songs/First-Light/

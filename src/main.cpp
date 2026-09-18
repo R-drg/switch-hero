@@ -538,12 +538,7 @@ int main(int argc, char **argv) {
         // The fonts live in the NRO's RomFS, which has to be mounted first.
         if (R_FAILED(romfsInit()))
             std::cerr << "Switch Hero: RomFS unavailable; falling back to sdmc fonts\n";
-        // Keep using an existing sd:/switch/fretboard install so songs and
-        // settings survive the rename to Switch Hero.
-        std::error_code ec;
-        const bool legacy = !fs::is_directory("sdmc:/switch/switch-hero", ec) &&
-                            fs::is_directory("sdmc:/switch/fretboard", ec);
-        const std::string home = legacy ? "sdmc:/switch/fretboard" : "sdmc:/switch/switch-hero";
+        const std::string home = "sdmc:/switch/switch-hero";
         fs::path root = home + "/songs", config = home + "/settings.cfg";
 #else
         fs::path root = "songs", config = "settings.cfg";
