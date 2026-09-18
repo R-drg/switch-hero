@@ -13,3 +13,4 @@ songs/*
 release/switch-hero/songs/*
 !release/switch-hero/songs/.gitkeep
 !release/switch-hero/songs/First-Light/
+release/*.zip
