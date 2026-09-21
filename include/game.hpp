@@ -31,9 +31,10 @@ struct Session {
     bool noFail = false, failed = false;
     // Strum leniency, as real guitar games have it: a strum that lands just
     // before its note still counts, and a strum right after a hammer-on you
-    // already played is swallowed instead of punished.
+    // already played is not punished if it finds no note of its own.
     static constexpr double strumLeniency = .09, hammerGrace = .16;
-    double pendingStrum = -1e9, lastHit = -1e9;
+    double pendingStrum = -1e9, lastHammer = -1e9;
+    bool strumAfterHammer = false;
     // The outer window is what still counts as a hit at all. It has to stay
     // comfortably tighter than the gap between notes in a fast run, or a late
     // press gets eaten by the note before the one it was aimed at and every
@@ -82,7 +83,7 @@ struct Session {
         st.result = hit ? 1 : -1;
         st.judgedAt = now;
         if (hit)
-            lastHit = now, pendingStrum = -1e9; // a hit always spends the strum
+            pendingStrum = -1e9; // a hit always spends the strum
         if (hit) {
             ++hits;
             int count = 0;
@@ -220,10 +221,12 @@ struct Session {
         if (gamepadMode)
             press(at, held, held & uint8_t(~previous), openPress, sustainedFrets, held != previous);
         else {
-            // A strum right after a note that was hammered on is how the song is
-            // usually played, not a mistake, so it is swallowed rather than held.
-            if (strum && at - lastHit > hammerGrace)
-                pendingStrum = at; // held briefly in case its note has not arrived yet
+            // Every strum is held briefly in case its note has not arrived yet.
+            // It must never be thrown away outright: in a fast run the next note
+            // is often due well inside the hammer-on grace, and dropping the strum
+            // there missed every other note of any run faster than the grace.
+            if (strum)
+                pendingStrum = at, strumAfterHammer = at - lastHammer <= hammerGrace;
             const bool strumming = at - pendingStrum <= strumLeniency;
             if (next < state.size()) {
                 auto &n = track->notes[next];
@@ -237,14 +240,19 @@ struct Session {
                 const bool action = strumming || ((n.kind == Kind::Tap || (n.kind == Kind::Hopo && combo > 0)) &&
                                                   held != previous);
                 if (std::abs(n.time - at) <= window && match && action) {
+                    if (!strumming)
+                        lastHammer = at;
                     settle(next, true, at);
                     ++next;
                     pendingStrum = -1e9; // the strum was spent on this note
                 }
             }
             // A strum only costs the player once it has had its chance to land.
+            // Strumming along with a hammer-on is how the song is usually played,
+            // not a mistake, so that one is let go.
             if (pendingStrum > -1e8 && time - pendingStrum > strumLeniency) {
-                penalise(); // overstrum
+                if (!strumAfterHammer)
+                    penalise(); // overstrum
                 pendingStrum = -1e9;
             }
         }

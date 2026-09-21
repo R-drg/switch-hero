@@ -290,6 +290,38 @@ int main(int argc, char **argv) {
         hammer.update(.5, 2, false);
         check(hammer.misses == 0, "strumming a hammer-on already played is not an error");
         near(hammer.meter, .5 + Session::meterStep * 2, "strumming a hammer-on costs nothing");
+        // A fast strummed run: every strum lands inside the hammer-on grace of the
+        // note before it, and every one of them must still count.
+        Track strumRun;
+        for (int i = 0; i < 8; ++i) {
+            Note n = ns[0];
+            n.time = i * .1;
+            n.mask = uint8_t(1 << (i % 3));
+            n.kind = Kind::Strum;
+            n.end = {};
+            n.phrase = -1;
+            strumRun.notes.push_back(n);
+        }
+        Session strummed(a, strumRun);
+        strummed.gamepadMode = false;
+        for (int i = 0; i < 8; ++i) {
+            strummed.update(i * .1 - .02, strumRun.notes[size_t(i)].mask, false);
+            strummed.update(i * .1, strumRun.notes[size_t(i)].mask, true);
+        }
+        strummed.update(1, 0, false);
+        check(strummed.hits == 8 && strummed.misses == 0, "every strum of a fast run counts");
+        // The strum note straight after a hammer-on is strummed inside the grace too.
+        Track afterHammer = hopos;
+        afterHammer.notes.push_back(hopos.notes[0]);
+        afterHammer.notes[2].time = .38;
+        Session pickUp(a, afterHammer);
+        pickUp.gamepadMode = false;
+        pickUp.update(0, 1, true);
+        pickUp.update(.3, 2, false);  // hammer on
+        pickUp.update(.36, 1, false); // fret the next note
+        pickUp.update(.38, 1, true);  // and strum it 80 ms after the hammer-on
+        pickUp.update(.6, 1, false);
+        check(pickUp.hits == 3 && pickUp.misses == 0, "a strum right after a hammer-on plays its own note");
         Session stars(a, a.tracks[0]);
         stars.update(0, 1, false);
         stars.update(.12, 0, false);
