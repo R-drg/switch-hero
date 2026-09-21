@@ -7,18 +7,14 @@ You need a Switch that runs homebrew (Atmosphere + the Homebrew Menu).
 1. COPY TO THE SD CARD
 ----------------------
 
-Copy the whole "switch-hero" folder from here into the "switch" folder at
+Copy the whole "switch-hero" folder content into the "switch" folder at
 the root of your SD card. When you're done it should look like this:
 
     SD card
     └── switch
-        └── switch-hero
             ├── switch-hero.nro
             └── songs
                 └── First-Light      (demo song)
-
-If you already have a "switch-hero" folder, just replace switch-hero.nro.
-Your songs and settings.cfg stay as they are.
 
 
 2. LAUNCH
