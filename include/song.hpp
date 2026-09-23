@@ -58,5 +58,15 @@ struct SongBrief {
 };
 SongBrief peekSong(const fs::path &folder);
 std::vector<fs::path> scanSongs(const fs::path &root);
+// Deletes one song folder and everything in it. Refuses anything that is not
+// strictly inside `root`, the library itself included, so a bad path can never
+// take the whole songs folder or anything outside it with it.
+void deleteSong(const fs::path &root, const fs::path &folder);
 std::string difficultyName(int difficulty);
+// How a title or artist sorts: colour tags stripped, lower case, and a leading
+// "the " dropped, so "The Band" files under B.
+std::string sortKey(const std::string &text);
+// The letter a sort key files under for jumping through the list: 'A' to 'Z',
+// or '#' for anything starting with a digit or symbol.
+char jumpLetter(const std::string &key);
 } // namespace fret

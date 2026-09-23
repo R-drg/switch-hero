@@ -686,6 +686,48 @@ std::vector<fs::path> scanSongs(const fs::path &root) {
     }
     return {dirs.begin(), dirs.end()};
 }
+void deleteSong(const fs::path &root, const fs::path &folder) {
+    // Compared component by component on normalised paths. No canonical():
+    // libstdc++ on the Switch rejects sdmc:/ paths there.
+    const auto base = root.lexically_normal(), target = folder.lexically_normal();
+    auto b = base.begin(), t = target.begin();
+    for (; b != base.end() && !b->empty(); ++b, ++t)
+        if (t == target.end() || *t != *b)
+            throw std::runtime_error("Refusing to delete outside the songs folder");
+    bool deeper = false;
+    for (; t != target.end(); ++t)
+        if (!t->empty()) {
+            if (*t == "..")
+                throw std::runtime_error("Refusing to delete outside the songs folder");
+            deeper = true;
+        }
+    if (!deeper)
+        throw std::runtime_error("Refusing to delete the songs folder itself");
+    std::error_code ec;
+    fs::remove_all(target, ec);
+    if (ec)
+        throw std::runtime_error("Could not delete " + target.filename().string() + ": " + ec.message());
+}
+std::string sortKey(const std::string &text) {
+    std::string out;
+    bool tag = false;
+    for (char c : text) {
+        if (c == '<')
+            tag = true;
+        else if (c == '>')
+            tag = false;
+        else if (!tag)
+            out += c;
+    }
+    out = lower(trim(out));
+    if (out.rfind("the ", 0) == 0)
+        out = trim(out.substr(4));
+    return out;
+}
+char jumpLetter(const std::string &key) {
+    const char c = key.empty() ? '#' : key[0];
+    return c >= 'a' && c <= 'z' ? char(c - 'a' + 'A') : '#';
+}
 std::string difficultyName(int d) {
     static const char *names[] = {"Easy", "Medium", "Hard", "Expert"};
     return names[std::clamp(d, 0, 3)];

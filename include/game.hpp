@@ -43,15 +43,17 @@ struct Session {
     // Inside it, how close you were decides the tier, and the tier decides both
     // the score and how hard the hit reads on screen. Without this a note nailed
     // dead-on and one scraped in at the edge of the window are the same event.
-    static constexpr double perfectWindow = .025, greatWindow = .045;
+    // The tiers scale with the window (25 and 45 ms of the original 70), so a
+    // wider window on an easier difficulty is wider all the way through.
+    static constexpr double perfectShare = .025 / .07, greatShare = .045 / .07;
     static constexpr double tierBonus[4] = {1, 1, 1.15, 1.35};
     int tierCounts[4] = {0, 0, 0, 0};
     int lastTier = 0;
     double lastError = 0, lastTierAt = -1e9;
     uint8_t previous = 0;
-    static int tierFor(double err) {
+    int tierFor(double err) const {
         const double d = std::abs(err);
-        return d <= perfectWindow ? 3 : d <= greatWindow ? 2 : 1;
+        return d <= window * perfectShare ? 3 : d <= window * greatShare ? 2 : 1;
     }
     Session(const Song &s, const Track &t)
         : song(&s), track(&t), state(t.notes.size()), phraseRemaining(t.phrases.size()),
@@ -59,6 +61,14 @@ struct Session {
         for (auto &n : t.notes)
             if (n.phrase >= 0)
                 ++phraseRemaining[n.phrase];
+    }
+    // How wide the hit window is for a difficulty (0 easy to 3 expert) and the
+    // player's choice (0 strict, 1 normal, 2 lenient). Easier charts forgive
+    // more, as the originals do; strict expert keeps the old 70 ms.
+    static double windowFor(int difficulty, int leniency) {
+        static constexpr double base[4] = {.110, .100, .092, .085};
+        static constexpr double scale[3] = {.82, 1, 1.25};
+        return base[std::clamp(difficulty, 0, 3)] * scale[std::clamp(leniency, 0, 2)];
     }
     int multiplier() const { return std::min(4, 1 + combo / 10) * (powerActive ? 2 : 1); }
     void activate() {

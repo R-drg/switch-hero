@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(SwitchHero VERSION 0.1.0 LANGUAGES CXX)
+project(SwitchHero VERSION 0.2.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 option(SWITCH_HERO_BUILD_GAME "Build SDL game" ON)
-add_library(switch_hero_core src/song.cpp src/enchor.cpp)
+add_library(switch_hero_core src/song.cpp src/enchor.cpp src/scores.cpp)
 target_include_directories(switch_hero_core PUBLIC include)
 target_include_directories(switch_hero_core PRIVATE vendor)
 target_compile_options(switch_hero_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -22,6 +22,9 @@ if(SWITCH_HERO_BUILD_GAME)
     set(FRET_SDL_TARGET fret_sdl)
   endif()
   add_executable(switch-hero src/main.cpp src/audio.cpp src/look.cpp src/downloader.cpp)
+  # One version, from project() above: the title menu and the downloader's
+  # User-Agent read it, so they cannot drift from the NRO's metadata.
+  target_compile_definitions(switch-hero PRIVATE SWITCH_HERO_VERSION="${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}")
   target_include_directories(switch-hero PRIVATE vendor)
   target_link_libraries(switch-hero PRIVATE switch_hero_core ${FRET_SDL_TARGET})
   if(NINTENDO_SWITCH)
@@ -34,7 +37,7 @@ if(SWITCH_HERO_BUILD_GAME)
     target_link_libraries(switch-hero PRIVATE PkgConfig::VORBIS PkgConfig::OPUS PkgConfig::MPG123 PkgConfig::CURL
       ${SDL2_STATIC_LIBRARIES} ${VORBIS_STATIC_LIBRARIES} ${OPUS_STATIC_LIBRARIES} ${MPG123_STATIC_LIBRARIES}
       ${CURL_STATIC_LIBRARIES})
-    nx_generate_nacp(OUTPUT switch-hero.nacp NAME "Switch Hero" AUTHOR "Rodrigo Ferreira" VERSION "0.1.0")
+    nx_generate_nacp(OUTPUT switch-hero.nacp NAME "Switch Hero" AUTHOR "Rodrigo Ferreira" VERSION "${PROJECT_VERSION}")
     nx_create_nro(switch-hero NACP switch-hero.nacp ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.jpg"
       ROMFS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
   else()

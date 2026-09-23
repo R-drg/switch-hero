@@ -1,4 +1,6 @@
 #include "game.hpp"
+#include "scores.hpp"
+#include <fstream>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -25,6 +27,61 @@ int main(int argc, char **argv) {
         if (argc != 2)
             throw std::runtime_error("fixture path required");
         fs::path root = argv[1];
+        check(sortKey("The Band") == "band" && sortKey("  <color=#f00>Zebra</color> ") == "zebra" &&
+                  sortKey("Theory") == "theory",
+              "sort keys drop tags, case and a leading the");
+        check(jumpLetter(sortKey("the Offspring")) == 'O' && jumpLetter("3 doors") == '#' && jumpLetter("") == '#',
+              "jump letters");
+        {
+            // High scores: stars and rank thresholds, best-only keeping, and a
+            // round trip through the file with a folder name full of spaces.
+            check(starsFor(.97, false) == 5 && starsFor(.9, false) == 4 && starsFor(.5, false) == 1,
+                  "star thresholds");
+            check(starsFor(1, true) == 0 && rankFor(1, true) == 'F' && rankFor(.95, false) == 'A', "rank thresholds");
+            Scores scores;
+            const std::string folder = "Some Band - A Song (Charter)";
+            check(scores.find(folder, "Guitar", 3) == nullptr && scores.bestStars(folder) == -1, "no record yet");
+            check(scores.submit(folder, "Guitar", 3, {1000, 3, 82, false}), "first clear is a best");
+            check(!scores.submit(folder, "Guitar", 3, {900, 2, 70, true}), "a lower score is not a best");
+            check(scores.find(folder, "Guitar", 3)->score == 1000 && scores.find(folder, "Guitar", 3)->fullCombo,
+                  "a lower full combo still earns the badge");
+            check(scores.submit(folder, "Guitar", 3, {1500, 4, 91, false}), "a higher score replaces");
+            check(scores.find(folder, "Guitar", 3)->fullCombo, "the full combo badge is kept");
+            scores.submit(folder, "Bass", 1, {200, 5, 99, true});
+            check(scores.bestStars(folder) == 5, "best stars across charts");
+            const fs::path file = root / "scores-test.cfg";
+            scores.save(file);
+            {
+                std::ofstream junk(file, std::ios::app);
+                junk << "broken line\n" << folder << "\tGuitar\tnine\t1\t1\t1\t0\n";
+            }
+            Scores loaded;
+            loaded.load(file);
+            const auto *r = loaded.find(folder, "Guitar", 3);
+            check(r && r->score == 1500 && r->stars == 4 && r->accuracy == 91 && r->fullCombo, "scores round trip");
+            check(loaded.find(folder, "Bass", 1) != nullptr && loaded.bestStars("Some Band") == -1,
+                  "records keyed by the whole folder name");
+            loaded.submit("Other", "Guitar", 3, {10, 1, 50, false});
+            loaded.forget(folder);
+            check(loaded.bestStars(folder) == -1 && loaded.find("Other", "Guitar", 3), "forget drops only that song");
+        }
+        {
+            // Deleting a song removes exactly its folder and never escapes the library.
+            const fs::path lib = root / "delete-test";
+            fs::remove_all(lib);
+            fs::create_directories(lib / "Band - Song" / "sub");
+            fs::create_directories(lib / "Keep");
+            std::ofstream(lib / "Band - Song" / "notes.chart") << "x";
+            std::ofstream(lib / "Band - Song" / "sub" / "a.ogg") << "x";
+            rejects([&] { deleteSong(lib, lib); }, "never deletes the library itself");
+            rejects([&] { deleteSong(lib, lib / "."); }, "never deletes the library via dot");
+            rejects([&] { deleteSong(lib, lib / "Band - Song" / ".." / ".."); }, "never escapes the library");
+            rejects([&] { deleteSong(lib / "Keep", lib / "Band - Song"); }, "never deletes a sibling");
+            check(fs::exists(lib / "Band - Song" / "notes.chart"), "rejected deletes leave files alone");
+            deleteSong(lib, lib / "Band - Song");
+            check(!fs::exists(lib / "Band - Song") && fs::exists(lib / "Keep"), "deletes only the song folder");
+            fs::remove_all(lib);
+        }
         auto a = loadSong(root / "chart"), b = loadSong(root / "midi");
         check(a.name == "INI title", "INI metadata must override chart metadata");
         near(a.offset, .25, "INI delay overrides chart offset");
@@ -80,6 +137,53 @@ int main(int argc, char **argv) {
         double released = sustain.score;
         sustain.update(.7, 1, false);
         near(sustain.score, released, "released sustain cannot be reacquired");
+        {
+            // A star phrase pays out only if every note in it is hit; one miss
+            // breaks it for good, and the rest of it draws as ordinary notes.
+            Track phrase;
+            phrase.phrases = {{0, 1000}};
+            for (int i = 0; i < 3; ++i) {
+                Note n;
+                n.time = 1 + i, n.mask = 1, n.phrase = 0;
+                n.end.fill(n.time);
+                phrase.notes.push_back(n);
+            }
+            Session clean(a, phrase);
+            for (int i = 0; i < 3; ++i)
+                clean.update(1 + i, 1, false), clean.update(1.2 + i, 0, false);
+            check(!clean.phraseFailed[0] && std::abs(clean.power - .25) < 1e-9, "a clean phrase earns star power");
+            Session broken(a, phrase);
+            broken.update(1.2, 0, false); // the first note goes by unplayed
+            check(broken.phraseFailed[0], "a missed note breaks its phrase");
+            for (int i = 1; i < 3; ++i)
+                broken.update(1 + i, 1, false), broken.update(1.2 + i, 0, false);
+            check(broken.hits == 2 && broken.power == 0, "a broken phrase earns nothing");
+        }
+        {
+            // Hit windows widen on easier difficulties and with the lenient
+            // setting; strict expert keeps roughly the old 70 ms.
+            check(Session::windowFor(0, 1) > Session::windowFor(3, 1) &&
+                      Session::windowFor(3, 2) > Session::windowFor(3, 1) &&
+                      std::abs(Session::windowFor(3, 0) - .07) < .002,
+                  "window scales by difficulty and leniency");
+            Track one;
+            Note n;
+            n.time = 1, n.mask = 1;
+            n.end.fill(n.time);
+            one.notes = {n};
+            Session easy(a, one);
+            easy.window = Session::windowFor(0, 1);
+            easy.update(1.095, 1, false);
+            check(easy.hits == 1 && easy.state[0].tier == 1, "a 95 ms late press still counts on easy");
+            Session strict(a, one);
+            strict.window = Session::windowFor(3, 0);
+            strict.update(1.095, 1, false);
+            check(strict.hits == 0 && strict.misses == 1, "the same press misses on strict expert");
+            Session tiers(a, one);
+            tiers.window = .1;
+            tiers.update(1.03, 1, false);
+            check(tiers.state[0].tier == 3, "tiers scale with the window (30 ms is perfect in a 100 ms window)");
+        }
         Track extended;
         extended.notes = {ns[0], ns[1]};
         for (auto &n : extended.notes)
