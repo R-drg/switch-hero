@@ -5,6 +5,7 @@
 #include "game.hpp"
 #include "guitar_input.hpp"
 #include "look.hpp"
+#include "platform.hpp"
 #include "scores.hpp"
 #include <SDL.h>
 #include <algorithm>
@@ -87,6 +88,10 @@ struct Settings {
     bool noFail = false;
     bool lefty = false;
     bool timingOverlay = false; // frame timing read-out, for checking pacing on the console
+    // Film grain is the most expensive third of look::grade() and the cheapest
+    // to lose. Split-screen multiplies everything else on screen, so this is
+    // the first switch to reach for when frames drop.
+    bool filmGrain = true;
     int sortMode = 0;           // song list order: 0 title, 1 artist, 2 best stars
     int hitWindow = 1;          // 0 strict, 1 normal, 2 lenient
     // Volumes run 0 to 10.
@@ -120,6 +125,8 @@ struct Settings {
                 lefty = v != 0;
             if (k == "timing_overlay")
                 timingOverlay = v != 0;
+            if (k == "film_grain")
+                filmGrain = v != 0;
             if (k == "sort_mode")
                 sortMode = whole(v, 0, 2);
             if (k == "hit_window")
@@ -161,6 +168,7 @@ struct Settings {
         f << "audio_ms " << audioMs << "\nvideo_ms " << videoMs << "\ntravel " << travel << "\ngamepad "
           << gamepad << "\nwii_guitar " << wiiGuitar << "\nno_fail " << noFail << "\npart " << part
           << "\ndifficulty " << difficulty << "\nlefty " << lefty << "\ntiming_overlay " << timingOverlay
+          << "\nfilm_grain " << filmGrain
           << "\nsort_mode " << sortMode << "\nhit_window " << hitWindow << "\nmusic_volume " << musicVolume
           << "\nsfx_volume " << sfxVolume << '\n';
         if (!lastSong.empty())
@@ -208,22 +216,35 @@ std::string bindingName(int n) {
     return "BTN " + std::to_string(n);
 }
 class Controller {
-    SDL_GameController *pad = nullptr;
+  public:
+    // Player one is index 0 everywhere. Two to four only exist docked.
+    static constexpr size_t maxPlayers = 4;
+
+  private:
+    SDL_GameController *pad[maxPlayers] = {};
 #ifdef __SWITCH__
     // Buttons are sampled on their own thread about once a millisecond, so a
     // press is timed when it arrives rather than rounded to the next frame
     // (up to 16.7 ms late). The controller's own report rate still applies.
     struct Snapshot {
-        uint64_t standard = 0, guitar = 0;
-        bool standardOn = false, guitarOn = false;
-        uint32_t standardStyle = 0, guitarStyle = 0;
+        // Player one is index 0 and keeps the handheld pad, so single player is
+        // untouched by multiplayer existing. Two to four are docked-only.
+        uint64_t standard[maxPlayers] = {};
+        bool standardOn[maxPlayers] = {};
+        uint32_t standardStyle[maxPlayers] = {};
+        uint64_t guitar = 0;
+        bool guitarOn = false;
+        uint32_t guitarStyle = 0;
     };
-    PadState nx{}, nxGuitar{};
+    PadState nx[maxPlayers]{}, nxGuitar{};
     std::thread poller;
     std::atomic<bool> stopping{false};
     std::mutex mutex;
     Snapshot snap;
-    double pressAt = -1; // earliest press not yet handed to a frame
+    // Earliest press per player not yet handed to a frame. One shared stamp
+    // would hand player one's press time to player two's judgement and put
+    // every one of their notes off by however far apart the two presses were.
+    double pressAt[maxPlayers];
     bool guitarInput = false, guitarConnected = false;
     static double seconds() { return double(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency(); }
     void poll() {
@@ -241,23 +262,35 @@ class Controller {
                     svcSetThreadCoreMask(threadGetCurHandle(), core, u32(BIT(core)));
                     break;
                 }
-        uint64_t previous = 0;
+        uint64_t previous[maxPlayers] = {};
         while (!stopping) {
-            padUpdate(&nx);
+            for (size_t p = 0; p < maxPlayers; ++p)
+                padUpdate(&nx[p]);
             padUpdate(&nxGuitar);
             Snapshot s;
-            s.standard = padGetButtons(&nx), s.guitar = padGetButtons(&nxGuitar);
-            s.standardOn = padIsConnected(&nx), s.guitarOn = padIsConnected(&nxGuitar);
-            s.standardStyle = padGetStyleSet(&nx), s.guitarStyle = padGetStyleSet(&nxGuitar);
-            const uint64_t down = (s.standard | s.guitar) & watched;
-            const bool rising = (down & ~previous) != 0;
-            previous = down;
+            for (size_t p = 0; p < maxPlayers; ++p) {
+                s.standard[p] = padGetButtons(&nx[p]);
+                s.standardOn[p] = padIsConnected(&nx[p]);
+                s.standardStyle[p] = padGetStyleSet(&nx[p]);
+            }
+            s.guitar = padGetButtons(&nxGuitar);
+            s.guitarOn = padIsConnected(&nxGuitar);
+            s.guitarStyle = padGetStyleSet(&nxGuitar);
+            // Each player is stamped from their own rising edge. The guitar only
+            // ever belongs to player one, so it is folded into that pad alone.
+            bool rising[maxPlayers];
+            for (size_t p = 0; p < maxPlayers; ++p) {
+                const uint64_t down = (s.standard[p] | (p == 0 ? s.guitar : 0)) & watched;
+                rising[p] = (down & ~previous[p]) != 0;
+                previous[p] = down;
+            }
             const double t = seconds();
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 snap = s;
-                if (rising && pressAt < 0)
-                    pressAt = t;
+                for (size_t p = 0; p < maxPlayers; ++p)
+                    if (rising[p] && pressAt[p] < 0)
+                        pressAt[p] = t;
             }
             svcSleepThread(1'000'000);
         }
@@ -265,9 +298,17 @@ class Controller {
 #endif
   public:
     Controller() {
+        for (size_t p = 0; p < maxPlayers; ++p)
+            pressAt[p] = -1;
 #ifdef __SWITCH__
-        padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-        padInitializeDefault(&nx);
+        padConfigureInput(maxPlayers, HidNpadStyleSet_NpadStandard);
+        // Player one keeps the default pad, which is handheld *and* No1, so
+        // single player still works undocked exactly as before. The rest are
+        // explicit controller ids, which only report when docked pads exist.
+        padInitializeDefault(&nx[0]);
+        static constexpr HidNpadIdType ids[] = {HidNpadIdType_No2, HidNpadIdType_No3, HidNpadIdType_No4};
+        for (size_t p = 1; p < maxPlayers; ++p)
+            padInitialize(&nx[p], ids[p - 1]);
         padInitialize(&nxGuitar, HidNpadIdType_No1);
         poller = std::thread([this] { poll(); });
 #else
@@ -282,23 +323,44 @@ class Controller {
         if (poller.joinable())
             poller.join();
 #endif
-        if (pad)
-            SDL_GameControllerClose(pad);
-        pad = nullptr;
+        for (size_t p = 0; p < maxPlayers; ++p) {
+            if (pad[p])
+                SDL_GameControllerClose(pad[p]);
+            pad[p] = nullptr;
+        }
     }
     void connect() {
 #ifndef __SWITCH__
-        if (pad && SDL_GameControllerGetAttached(pad))
+        // Desktop opens up to four pads in joystick order, so split-screen can
+        // be developed and played without a console.
+        bool live = true;
+        for (size_t p = 0; p < maxPlayers; ++p)
+            if (!pad[p] || !SDL_GameControllerGetAttached(pad[p]))
+                live = false;
+        if (live)
             return;
-        if (pad) {
-            SDL_GameControllerClose(pad);
-            pad = nullptr;
-        }
-        for (int i = 0; i < SDL_NumJoysticks(); ++i)
-            if (SDL_IsGameController(i)) {
-                pad = SDL_GameControllerOpen(i);
-                break;
+        for (size_t p = 0; p < maxPlayers; ++p) {
+            if (pad[p] && !SDL_GameControllerGetAttached(pad[p])) {
+                SDL_GameControllerClose(pad[p]);
+                pad[p] = nullptr;
             }
+        }
+        size_t slot = 0;
+        for (int i = 0; i < SDL_NumJoysticks() && slot < maxPlayers; ++i) {
+            if (!SDL_IsGameController(i))
+                continue;
+            while (slot < maxPlayers && pad[slot])
+                ++slot;
+            if (slot >= maxPlayers)
+                break;
+            SDL_JoystickID want = SDL_JoystickGetDeviceInstanceID(i);
+            bool already = false;
+            for (size_t p = 0; p < maxPlayers; ++p)
+                if (pad[p] && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pad[p])) == want)
+                    already = true;
+            if (!already)
+                pad[slot] = SDL_GameControllerOpen(i);
+        }
 #endif
     }
     // Live view of both input sources for the controller test panel.
@@ -316,32 +378,48 @@ class Controller {
             std::lock_guard<std::mutex> lock(mutex);
             s = snap;
         }
-        p.standard = s.standardOn, p.guitar = s.guitarOn;
-        p.standardStyle = s.standardStyle, p.guitarStyle = s.guitarStyle;
-        p.standardRaw = s.standard, p.guitarRaw = s.guitar;
+        p.standard = s.standardOn[0], p.guitar = s.guitarOn;
+        p.standardStyle = s.standardStyle[0], p.guitarStyle = s.guitarStyle;
+        p.standardRaw = s.standard[0], p.guitarRaw = s.guitar;
         p.name = p.guitar ? "player one npad" : "no player-one controller";
 #else
         connect();
-        p.standard = pad != nullptr;
-        p.name = pad ? SDL_GameControllerName(pad) : "no controller";
+        p.standard = pad[0] != nullptr;
+        p.name = pad[0] ? SDL_GameControllerName(pad[0]) : "no controller";
         for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; ++b)
-            if (pad && SDL_GameControllerGetButton(pad, SDL_GameControllerButton(b)))
+            if (pad[0] && SDL_GameControllerGetButton(pad[0], SDL_GameControllerButton(b)))
                 p.standardRaw |= bit(b);
 #endif
         return p;
     }
-    bool connected() {
+    bool connected(size_t player = 0) {
 #ifdef __SWITCH__
         std::lock_guard<std::mutex> lock(mutex);
-        return guitarInput ? snap.guitarOn : snap.standardOn;
+        if (player == 0 && guitarInput)
+            return snap.guitarOn;
+        return player < maxPlayers && snap.standardOn[player];
 #else
-        return pad && SDL_GameControllerGetAttached(pad);
+        return player < maxPlayers && pad[player] && SDL_GameControllerGetAttached(pad[player]);
 #endif
+    }
+    // How many players have a pad reporting right now. The lobby uses this to
+    // say what it is waiting for rather than silently refusing to start.
+    size_t attached() {
+        size_t n = 0;
+        for (size_t p = 0; p < maxPlayers; ++p)
+            if (connected(p))
+                ++n;
+        return n;
     }
     // `pressedAt` receives when this frame's earliest new press arrived, on the
     // now() clock, or stays negative when the input layer cannot say.
-    uint64_t read(bool wiiGuitar, bool playing, double *pressedAt = nullptr) {
+    uint64_t read(bool wiiGuitar, bool playing, double *pressedAt = nullptr, size_t player = 0) {
         uint64_t out = 0;
+        if (player >= maxPlayers) {
+            if (pressedAt)
+                *pressedAt = -1;
+            return 0;
+        }
 #ifdef __SWITCH__
         Snapshot s;
         {
@@ -350,13 +428,17 @@ class Controller {
             std::lock_guard<std::mutex> lock(mutex);
             s = snap;
             if (pressedAt)
-                *pressedAt = pressAt;
-            pressAt = -1;
+                *pressedAt = pressAt[player];
+            pressAt[player] = -1;
         }
+        // Only player one can hold the Wii guitar; the others are plain pads.
+        const bool guitarHere = wiiGuitar && player == 0;
         guitarConnected = s.guitarOn;
-        guitarInput = exclusiveGuitarInput(wiiGuitar, playing, guitarConnected);
+        if (player == 0)
+            guitarInput = exclusiveGuitarInput(guitarHere, playing, guitarConnected);
         // Plus and Minus always answer from the normal controller.
-        auto h = controllerButtons(wiiGuitar, playing, guitarConnected, s.standard, s.guitar,
+        auto h = controllerButtons(guitarHere, playing, guitarConnected, s.standard[player],
+                                   player == 0 ? s.guitar : 0,
                                    HidNpadButton_Plus | HidNpadButton_Minus);
         const std::pair<uint64_t, int> map[] = {
             {HidNpadButton_B, 0},      {HidNpadButton_A, 1},      {HidNpadButton_Y, 2},
@@ -374,13 +456,13 @@ class Controller {
         if (pressedAt)
             *pressedAt = -1; // desktop presses are stamped from SDL events instead
         connect();
-        if (pad) {
+        if (auto *p = pad[player]) {
             for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; ++b)
-                if (SDL_GameControllerGetButton(pad, SDL_GameControllerButton(b)))
+                if (SDL_GameControllerGetButton(p, SDL_GameControllerButton(b)))
                     out |= bit(b);
-            if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000)
+            if (SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000)
                 out |= bit(32);
-            if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000)
+            if (SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000)
                 out |= bit(33);
         }
 #endif
@@ -452,13 +534,26 @@ float decay(double age, double life) {
 
 // The highway: a strip of grip tape running off into the dark, chrome rails with
 // a flame job at the near end, and bolted fret buttons on the player's edge.
+// How much of the 1280x720 frame the board claims. Single player leaves room
+// down both sides for its full HUD; a split-screen pane is a quarter or a half
+// of the screen, so there the board has to take much more of its own frame or
+// it reads as a narrow ribbon floating in the middle of nothing.
+struct Board {
+    float top = 150, bottom = 600, edge = 664, nearWidth = 580, farWidth = 330;
+};
+// The same board stretched for split-screen. The taper is kept roughly in
+// proportion (farWidth/nearWidth stays near .57) so notes in the distance
+// spread the same way they do in single player.
+constexpr Board splitBoard{112, 636, 692, 830, 476};
+
 void highway(const Song &song, const Session &session, const Settings &settings, double time, uint8_t held,
-             double ui) {
+             double ui, const Board &board = Board{}) {
     // farWidth sets how hard the board foreshortens. At 236 the far half of the
     // lookahead was crushed into the top ~29% of the highway, so any fast run
     // arrived as an unreadable blob; 330 spreads that to ~36% while keeping the
     // board tapered.
-    const float top = 150, bottom = 600, edge = 664, nearWidth = 580, farWidth = 330;
+    const float top = board.top, bottom = board.bottom, edge = board.edge, nearWidth = board.nearWidth,
+                farWidth = board.farWidth;
     const float k = nearWidth / farWidth - 1;
     const bool power = session.powerActive;
     auto width = [&](float y) { return farWidth + (y - top) / (bottom - top) * (nearWidth - farWidth); };
@@ -667,7 +762,7 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         // is lit rather than merely outlined.
         if (held & (1 << l))
             glow(x, bottom - 40, width(bottom) / 5 * 1.6f, 300, alpha(power ? ink::power : lanes[size_t(l)], .16f));
-        receptor(size_t(l), x, bottom, 106, held & (1 << l), power, hitFlash[size_t(l)]);
+        receptor(size_t(l), x, bottom, 106 * nearWidth / 580, held & (1 << l), power, hitFlash[size_t(l)]);
         auto label = body(16, alpha(lanes[size_t(l)], .85f));
         label.align = Align::Center;
         text(x, edge + 2, bindingName(settings.wiiGuitar ? wiiGuitarBindings[l] : settings.bindings[l]), label);
@@ -802,7 +897,7 @@ void menu(float cx, float y, float spacing, const std::vector<std::string> &item
 
 // The options screens: a short list of categories, each opening its own page,
 // so every setting sits under a name that says what it is for.
-enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset };
+enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, FilmGrain, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset };
 struct OptionRow {
     Opt id;
     int fret = 0;
@@ -863,6 +958,8 @@ std::vector<OptionRow> optionRows(int page, const Settings &s, bool confirmReset
                         "Fine-tune by hand in 5 ms steps. Positive draws notes later.", true});
         rows.push_back({Opt::TimingOverlay, 0, "Timing overlay", s.timingOverlay ? "ON" : "OFF",
                         "Shows frame times and audio clock drift in the corner. For checking smoothness.", true});
+        rows.push_back({Opt::FilmGrain, 0, "Film grain", s.filmGrain ? "ON" : "OFF",
+                        "The moving speckle over the picture. Turn it off first if frames drop.", true});
     } else {
         static const char *const names[] = {"Green fret", "Red fret", "Yellow fret", "Blue fret", "Orange fret"};
         for (int i = 0; i < 5; ++i)
@@ -983,6 +1080,7 @@ int main(int argc, char **argv) {
         scanLibrary();
         Settings settings;
         settings.load(config);
+        look::setGrain(settings.filmGrain);
         Scores scores;
         scores.load(scoresPath);
         // How the last finished run compared with the stored best.
@@ -1019,7 +1117,7 @@ int main(int argc, char **argv) {
             settings.wiiGuitar = true;
         Audio audio;
         audio.start(); // interface sounds work from the song list onward
-        enum class Screen { Main, Library, Select, Playing, Paused, Countdown, Results, Settings, Calibrate, Download };
+        enum class Screen { Main, Library, Select, Playing, Paused, Countdown, Results, Settings, Calibrate, Download, Lobby };
         Screen screen = Screen::Main;
         std::string callout;
         double calloutAt = -1;
@@ -1035,6 +1133,39 @@ int main(int argc, char **argv) {
         bool wasPower = false;
         std::unique_ptr<Song> song;
         std::unique_ptr<Session> session;
+        // Split-screen multiplayer. `multi` is null in single player, and every
+        // multiplayer branch below is guarded on it, so the single-player path
+        // stays exactly the code it was.
+        std::unique_ptr<MultiSession> multi;
+        // Lobby: who has joined, and what each of them picked.
+        struct Seat {
+            bool joined = false;
+            int partRow = 0, diffRow = 3;
+            size_t track = 0;
+        };
+        std::array<Seat, Controller::maxPlayers> seats;
+        int lobbyRow = 0; // 0..3 seat being configured by its own pad
+        std::vector<std::string> lobbyParts;
+        // Set when the song list was entered from the Multiplayer menu entry, so
+        // picking a song goes to the lobby instead of straight into play.
+        bool multiplayer = false;
+        // Which seat each MultiSession player came from, so a player's board and
+        // their pad stay together when seat 2 joins and seat 1 does not.
+        std::vector<size_t> lobbySeats;
+        // Previous frame's buttons per pad, for edge detection in the lobby and
+        // during multiplayer play. Player one's single-player path keeps using
+        // `previousButtons`, which is untouched.
+        std::array<uint64_t, Controller::maxPlayers> previousSeatButtons{};
+        // This frame's held frets per player, so the render can light the fret
+        // buttons each of them is holding.
+        std::array<uint8_t, Controller::maxPlayers> seatFretsNow{};
+        // Celebrations are per player: a streak is one player's, and shouting
+        // it across all four boards would tell the other three nothing.
+        std::array<std::string, Controller::maxPlayers> seatCallout{};
+        std::array<double, Controller::maxPlayers> seatCalloutAt{};
+        std::array<int, Controller::maxPlayers> seatMilestone{};
+        std::array<int, Controller::maxPlayers> seatShownMisses{};
+        std::array<bool, Controller::maxPlayers> seatWasPower{};
         size_t selected = 0, trackIndex = 0;
         // Song list order, and the groups left/right jump between: first letters
         // of the title or artist, or star counts when sorted by best stars.
@@ -1141,6 +1272,21 @@ int main(int argc, char **argv) {
                 return time - std::min(.05, std::max(0.0, clockSeconds - pressedAtSeconds));
             if (pressStamped && !SDL_TICKS_PASSED(previousClockTicks, pressedAt))
                 return time - std::min(.05, (clockTicks - pressedAt) / 1000.0);
+            return time;
+        };
+        // The same conversion for a multiplayer seat, whose stamp comes back
+        // from its own pad rather than the shared one. The stamp is an absolute
+        // now() reading; what Session wants is when the press happened on the
+        // song clock. Handing it the raw stamp made every press judge at the
+        // frame instead - up to a frame late, and throwing away the whole point
+        // of sampling the pads every millisecond.
+        //
+        // Calibration is deliberately shared: the audio and video offsets are
+        // properties of the console and the television, not of a controller, so
+        // player one's calibration is the right answer for all four.
+        auto seatPressTime = [&](double time, double stamp) {
+            if (stamp >= 0 && stamp >= previousClockSeconds)
+                return time - std::min(.05, std::max(0.0, clockSeconds - stamp));
             return time;
         };
         // Offset calibration. Audio: tap along to clicks with nothing on screen
@@ -1289,6 +1435,7 @@ int main(int argc, char **argv) {
             try {
                 look::prepareGems();
                 audio.load(*song);
+                multi.reset(); // single player owns the screen again
                 session = std::make_unique<Session>(*song, song->tracks[trackIndex]);
                 session->gamepadMode = settings.gamepad && !settings.wiiGuitar;
                 session->noFail = settings.noFail;
@@ -1304,6 +1451,91 @@ int main(int argc, char **argv) {
                 message.clear();
             } catch (const std::exception &e) {
                 audio.stop();
+                message = e.what();
+                screen = Screen::Library;
+            }
+        };
+        auto openLobby = [&]() {
+            if (!song)
+                return;
+            lobbyParts = songParts(*song);
+            for (auto &s : seats)
+                s = Seat{};
+            // Player one is already here: they are the one who picked the song.
+            seats[0].joined = true;
+            for (auto &s : seats) {
+                for (size_t i = 0; i < lobbyParts.size(); ++i)
+                    if (partIndex(lobbyParts[i]) == settings.part)
+                        s.partRow = int(i);
+                s.diffRow = nearestDifficulty(*song, lobbyParts.empty() ? std::string() : lobbyParts[size_t(s.partRow)],
+                                              settings.difficulty);
+            }
+            lobbyRow = 0;
+            message.clear();
+            screen = Screen::Lobby;
+        };
+        auto startMulti = [&]() {
+            if (!song)
+                return;
+            std::vector<const Track *> tracks;
+            std::vector<size_t> whose; // seat index behind each track, in order
+            for (size_t p = 0; p < seats.size(); ++p) {
+                if (!seats[p].joined)
+                    continue;
+                const std::string part =
+                    lobbyParts.empty() ? std::string() : lobbyParts[size_t(seats[p].partRow)];
+                const int index = findTrack(*song, part, seats[p].diffRow);
+                if (index < 0) {
+                    message = "Player " + std::to_string(p + 1) + " has no chart for that difficulty";
+                    audio.playSfx(Sfx::Back);
+                    return;
+                }
+                seats[p].track = size_t(index);
+                tracks.push_back(&song->tracks[size_t(index)]);
+                whose.push_back(p);
+            }
+            if (tracks.size() < 2) {
+                message = "Multiplayer needs at least two players";
+                audio.playSfx(Sfx::Back);
+                return;
+            }
+            try {
+                look::prepareGems();
+                audio.load(*song);
+                multi = std::make_unique<MultiSession>(*song, tracks, settings.hitWindow);
+                lobbySeats = whose;
+                for (auto &p : multi->players)
+                    p.gamepadMode = settings.gamepad && !settings.wiiGuitar;
+                // The rock meter still moves and still reads red on a player's own
+                // board, but nobody is ejected: see MultiSession's comment.
+                session.reset();
+                previewActive = false, previewFolder.clear();
+                settings.lastSong = song->folder.filename().string();
+                audio.pause(false);
+                restartClock();
+                callout.clear(), calloutAt = -1, milestone = 0, wasPower = false;
+                newBest = false, previousBest = -1;
+                shownMisses = 0, shownCount = -1, shownScore = 0, shownMultiplier = 1;
+                // One shared stream for everyone, so the guitar is never ducked:
+                // muting it because one of four players is struggling would
+                // punish the other three for their mistake.
+                audio.muteGuitar(false);
+                // Count everyone in, as resuming does. Four players cannot all
+                // be watching the moment the song is picked, and the first notes
+                // arrive too soon for whoever looked away.
+                audio.pause(true);
+                countdownAt = now(), countdownShown = 0;
+                pauseRow = 0;
+                seatCallout.fill(std::string());
+                seatCalloutAt.fill(-1);
+                seatMilestone.fill(0);
+                seatShownMisses.fill(0);
+                seatWasPower.fill(false);
+                screen = Screen::Countdown;
+                message.clear();
+            } catch (const std::exception &e) {
+                audio.stop();
+                multi.reset();
                 message = e.what();
                 screen = Screen::Library;
             }
@@ -1479,27 +1711,103 @@ int main(int argc, char **argv) {
                 screen = Screen::Settings;
             };
             if (screen == Screen::Main) {
-                // Quickplay, download, options, quit.
+                // Quickplay, multiplayer, download, options, quit.
                 if (up || down) {
-                    mainRow = (mainRow + 4 + (down ? 1 : -1)) % 4;
+                    mainRow = (mainRow + 5 + (down ? 1 : -1)) % 5;
                     audio.playSfx(Sfx::Move);
                 }
                 // Back walks to Quit rather than quitting, so mashing back never exits.
-                if (back && mainRow != 3) {
-                    mainRow = 3;
+                if (back && mainRow != 4) {
+                    mainRow = 4;
                     audio.playSfx(Sfx::Move);
-                } else if (accept || (back && mainRow == 3)) {
+                } else if (accept || (back && mainRow == 4)) {
                     if (mainRow == 0) {
                         audio.playSfx(Sfx::Select, .7f);
                         message.clear();
                         screen = Screen::Library;
-                    } else if (mainRow == 1)
+                    } else if (mainRow == 1) {
+                        // Multiplayer is docked-only: four boards on the handheld
+                        // screen are unreadable, and players two to four have no
+                        // way to hold a Joy-Con that is attached to the console.
+                        if (!platform::docked()) {
+                            audio.playSfx(Sfx::Back);
+                            message = "Multiplayer needs the console in its dock";
+                        } else {
+                            audio.playSfx(Sfx::Select, .7f);
+                            message.clear();
+                            multiplayer = true;
+                            screen = Screen::Library;
+                        }
+                    } else if (mainRow == 2)
                         openDownloads();
-                    else if (mainRow == 2)
+                    else if (mainRow == 3)
                         openOptions();
                     else
                         running = false;
                 }
+            } else if (screen == Screen::Lobby) {
+                // Every seat is driven by its own pad, so four people configure
+                // themselves at once instead of passing one controller around.
+                for (size_t p = 0; p < seats.size(); ++p) {
+                    double ignoredStamp = -1;
+                    const uint64_t held = controller.read(settings.wiiGuitar, false, &ignoredStamp, p);
+                    const uint64_t hit = held & ~previousSeatButtons[p];
+                    previousSeatButtons[p] = held;
+                    auto seatPress = [&](int b) { return bool(hit & bit(b)); };
+                    // Player one also answers to the keyboard, for desktop work.
+                    const bool pUp = seatPress(11) || (p == 0 && key(SDL_SCANCODE_UP)),
+                               pDown = seatPress(12) || (p == 0 && key(SDL_SCANCODE_DOWN)),
+                               pLeft = seatPress(13) || (p == 0 && key(SDL_SCANCODE_LEFT)),
+                               pRight = seatPress(14) || (p == 0 && key(SDL_SCANCODE_RIGHT)),
+                               pAccept = seatPress(1) || (p == 0 && key(SDL_SCANCODE_RETURN)),
+                               pBack = seatPress(0) || seatPress(4) || (p == 0 && key(SDL_SCANCODE_ESCAPE));
+                    auto &seat = seats[p];
+                    if (!seat.joined) {
+                        // Player one cannot leave: backing out of the lobby is
+                        // theirs, and an empty lobby has nothing to go back to.
+                        if (pAccept && controller.connected(p)) {
+                            seat.joined = true;
+                            audio.playSfx(Sfx::Select, .7f);
+                        }
+                        continue;
+                    }
+                    if (pLeft || pRight) {
+                        if (!lobbyParts.empty()) {
+                            const int n = int(lobbyParts.size());
+                            seat.partRow = (seat.partRow + n + (pRight ? 1 : -1)) % n;
+                            seat.diffRow = nearestDifficulty(*song, lobbyParts[size_t(seat.partRow)], seat.diffRow);
+                            audio.playSfx(Sfx::Move);
+                        }
+                    }
+                    if (pUp || pDown) {
+                        const std::string part = lobbyParts.empty() ? std::string() : lobbyParts[size_t(seat.partRow)];
+                        // Step to the next difficulty that this song actually
+                        // charts, so a seat can never sit on an empty one.
+                        for (int step = 1; step <= 4; ++step) {
+                            const int want = (seat.diffRow + 4 + (pDown ? step : -step)) % 4;
+                            if (findTrack(*song, part, want) >= 0) {
+                                seat.diffRow = want;
+                                audio.playSfx(Sfx::Move);
+                                break;
+                            }
+                        }
+                    }
+                    if (pBack) {
+                        if (p == 0) {
+                            audio.playSfx(Sfx::Back);
+                            multi.reset();
+                            screen = Screen::Library;
+                        } else {
+                            seat.joined = false;
+                            audio.playSfx(Sfx::Back);
+                        }
+                    }
+                    // Plus, from any joined seat, starts the song.
+                    if (seatPress(6))
+                        startMulti();
+                }
+                if (screen == Screen::Lobby && (pause || key(SDL_SCANCODE_SPACE)))
+                    startMulti();
             } else if (screen == Screen::Library && confirmDelete) {
                 if (up || down || left || right) {
                     deleteRow = 1 - deleteRow;
@@ -1561,6 +1869,10 @@ int main(int argc, char **argv) {
                 } else if (back) {
                     audio.playSfx(Sfx::Back);
                     message.clear();
+                    // Leaving the list drops out of multiplayer too, so coming
+                    // back in through Quickplay is single player again.
+                    multiplayer = false;
+                    multi.reset();
                     screen = Screen::Main;
                 } else if (!entries.empty()) {
                     if (up || down) {
@@ -1610,7 +1922,10 @@ int main(int argc, char **argv) {
                         finishLoad(); // pressing A never waits on the rest delay
                         if (song) {
                             audio.playSfx(Sfx::Select);
-                            openSelect(true);
+                            if (multiplayer)
+                                openLobby();
+                            else
+                                openSelect(true);
                         } else
                             audio.playSfx(Sfx::Back);
                     }
@@ -1847,6 +2162,14 @@ int main(int argc, char **argv) {
                                 audio.playSfx(Sfx::Toggle, .8f);
                         }
                         break;
+                    case Opt::FilmGrain:
+                        if (delta || accept) {
+                            settings.filmGrain = !settings.filmGrain;
+                            look::setGrain(settings.filmGrain);
+                            if (accept)
+                                audio.playSfx(Sfx::Toggle, .8f);
+                        }
+                        break;
                     case Opt::CalibrateAudio:
                     case Opt::CalibrateVideo:
                         if (accept) {
@@ -1877,6 +2200,7 @@ int main(int argc, char **argv) {
                             settings = Settings{};
                             settings.part = kept.part, settings.difficulty = kept.difficulty;
                             settings.lastSong = kept.lastSong, settings.sortMode = kept.sortMode;
+                            look::setGrain(settings.filmGrain);
                             confirmReset = false;
                             message = goodNews = "Options reset to defaults";
                             audio.playSfx(Sfx::Select);
@@ -1887,6 +2211,131 @@ int main(int argc, char **argv) {
                         optionsPage = -1, confirmReset = false;
                         message.clear();
                         audio.playSfx(Sfx::Back);
+                    }
+                }
+            } else if (screen == Screen::Playing && multi) {
+                const double time = songTime();
+                // Undocking mid-song cannot be allowed to leave three players
+                // holding pads they can no longer see a board for.
+                if (!platform::docked()) {
+                    frozen = time;
+                    audio.pause(true);
+                    audio.playSfx(Sfx::Back);
+                    message = "Dock the console to carry on";
+                    screen = Screen::Paused;
+                } else if (pause) {
+                    frozen = time;
+                    audio.pause(true);
+                    audio.playSfx(Sfx::Back);
+                    screen = Screen::Paused;
+                } else {
+                    for (size_t i = 0; i < multi->size(); ++i) {
+                        const size_t seat = i < lobbySeats.size() ? lobbySeats[i] : i;
+                        double seatStamp = -1;
+                        const uint64_t held = controller.read(settings.wiiGuitar, true, &seatStamp, seat);
+                        const uint64_t hit = held & ~previousSeatButtons[seat];
+                        previousSeatButtons[seat] = held;
+                        uint8_t seatFrets = settings.wiiGuitar && seat == 0 ? wiiGuitarFrets(held) : 0;
+                        if (!(settings.wiiGuitar && seat == 0))
+                            for (int f = 0; f < 5; ++f)
+                                if (held & bit(settings.bindings[size_t(f)]))
+                                    seatFrets |= uint8_t(1 << f);
+                        if (hit & bit(3))
+                            (*multi)[i].activate();
+                        // Kept for the render: the highway lights the fret a
+                        // player is holding from this, so without it their
+                        // buttons only lit when a note was actually judged.
+                        seatFretsNow[i] = seatFrets;
+                        auto &p = (*multi)[i];
+                        p.update(time, seatFrets, bool(hit & bit(1)), bool(hit & bit(1)),
+                                 seatPressTime(time, seatStamp));
+                        // One screech per fumble, and the rate limit is shared:
+                        // four players dropping notes at once would otherwise
+                        // machine-gun the sound.
+                        if (p.misses > seatShownMisses[i]) {
+                            if (now() - lastMissSound > .4) {
+                                audio.playSfx(Sfx::Miss, .75f);
+                                lastMissSound = now();
+                            }
+                            seatShownMisses[i] = p.misses;
+                        }
+                        // Shout out long streaks and star power, per player.
+                        if (p.combo / 50 > seatMilestone[i]) {
+                            seatMilestone[i] = p.combo / 50;
+                            seatCallout[i] = std::to_string(seatMilestone[i] * 50) + " NOTE STREAK!";
+                            seatCalloutAt[i] = now();
+                            audio.playSfx(Sfx::Streak);
+                        } else if (p.combo < seatMilestone[i] * 50)
+                            seatMilestone[i] = p.combo / 50;
+                        if (p.powerActive && !seatWasPower[i]) {
+                            seatCallout[i] = "STAR POWER!";
+                            seatCalloutAt[i] = now();
+                            audio.playSfx(Sfx::StarPower);
+                        }
+                        seatWasPower[i] = p.powerActive;
+                    }
+                    if (time < 0) {
+                        // Count the song in with drumstick clicks, as single
+                        // player does over its lead-in.
+                        const int count = int(std::ceil(-time));
+                        if (count != shownCount) {
+                            shownCount = count;
+                            audio.playSfx(Sfx::Count, .8f);
+                        }
+                    }
+                    if (auto e = audio.error(); !e.empty()) {
+                        audio.pause(true);
+                        screen = Screen::Paused;
+                        message = e;
+                    } else if (audio.position() > audio.duration() + 0.3) {
+                        audio.pause(true);
+                        audio.playSfx(Sfx::Win);
+                        frozen = time;
+                        screen = Screen::Results;
+                        // Multiplayer never writes a high score: scores.cfg is
+                        // keyed by song, part and difficulty with no room for a
+                        // player, and four runs would fight over one record.
+                        newBest = false, previousBest = -1;
+                    }
+                }
+            } else if (multi && (screen == Screen::Results || screen == Screen::Paused)) {
+                // Multiplayer has no per-run menu: there is no single player's
+                // difficulty to change and no high score to chase. A plays the
+                // same line-up again, B goes back to the list.
+                if (screen == Screen::Results && now() - screenChangedAt >= resultsLockout) {
+                    if (accept) {
+                        audio.playSfx(Sfx::Select);
+                        startMulti();
+                    } else if (back) {
+                        audio.stop();
+                        audio.playSfx(Sfx::Back);
+                        multi.reset();
+                        screen = Screen::Library;
+                    }
+                } else if (screen == Screen::Paused) {
+                    // The same menu single player has, less the difficulty row:
+                    // there are up to four difficulties in play and no one of
+                    // them to change.
+                    if (up || down) {
+                        pauseRow = (pauseRow + 3 + (down ? 1 : -1)) % 3;
+                        audio.playSfx(Sfx::Move);
+                    }
+                    const bool resume = pause || back || (accept && pauseRow == 0);
+                    if (resume && platform::docked()) {
+                        // Undocking is one of the things that pauses a song;
+                        // refuse to resume until the console is back in its dock.
+                        message.clear();
+                        countdownAt = now(), countdownShown = 0;
+                        screen = Screen::Countdown;
+                    } else if (accept && pauseRow == 1) {
+                        audio.playSfx(Sfx::Select);
+                        startMulti();
+                    } else if (accept && pauseRow == 2) {
+                        audio.stop();
+                        audio.playSfx(Sfx::Back);
+                        multi.reset();
+                        message.clear();
+                        screen = Screen::Library;
                     }
                 }
             } else if (screen == Screen::Playing) {
@@ -2155,6 +2604,12 @@ int main(int argc, char **argv) {
                     pauseRow = 0;
                 if (screen == Screen::Results) {
                     resultRow = 0, offsetTip = 0, offsetTipApplied = false;
+                }
+                // The timing tip is single player only: in multiplayer `session`
+                // is null - every player has their own - and there is no one run
+                // to offer a fix for. Reading it unguarded crashed the console
+                // the moment any multiplayer song ended.
+                if (screen == Screen::Results && session) {
                     // The median of the hits' timing errors: one fluffed note
                     // cannot drag it, and it needs enough hits to mean anything.
                     std::vector<double> errors;
@@ -2198,12 +2653,19 @@ int main(int argc, char **argv) {
                     s.align = Align::Center;
                     text(930, 592, std::to_string(entries.size()) + (entries.size() == 1 ? " SONG" : " SONGS"), s);
                 }
-                menu(330, 364, 66, {"QUICKPLAY", "DOWNLOAD SONGS", "OPTIONS", "QUIT"}, mainRow, ui, 400, 32);
-                static const char *const blurbs[] = {"pick a song from your library", "grab charts from chorus encore",
-                                                     "controls, calibration and gameplay", "back to the homebrew menu"};
+                menu(330, 330, 60, {"QUICKPLAY", "MULTIPLAYER", "DOWNLOAD SONGS", "OPTIONS", "QUIT"}, mainRow, ui, 400,
+                     32);
+                static const char *const blurbs[] = {"pick a song from your library",
+                                                     "two to four players, split screen",
+                                                     "grab charts from chorus encore",
+                                                     "controls, calibration and gameplay",
+                                                     "back to the homebrew menu"};
                 auto blurb = body(18, ink::dim);
                 blurb.align = Align::Center;
-                text(330, 620, blurbs[mainRow], blurb);
+                // Say why the entry will refuse before it is picked, not after.
+                text(330, 620, mainRow == 1 && !platform::docked() ? "dock the console to play multiplayer"
+                                                                   : blurbs[mainRow],
+                     blurb);
                 if (!message.empty())
                     text(60, 644, message, marker(22, messageInk(), -1));
                 hints({{glyphAccept, "SELECT"}, {glyphBack, "QUIT"}});
@@ -2748,6 +3210,211 @@ int main(int argc, char **argv) {
                     }
                     hints({{glyphAccept, "KEEP"}, {glyphAlt, "RETRY"}, {glyphBack, "CANCEL"}}, 430, 470);
                 }
+            } else if (screen == Screen::Lobby && song) {
+                wall(ui, ink::crt);
+                text(58, 24, "MULTIPLAYER", stencil(68, ink::chrome, {116, 122, 138, 255}));
+                {
+                    auto sub = marker(26, ink::marker, -2);
+                    tape(300, 118, 520, 50, -1);
+                    text(300, 100, plainTitle(song->name), [&] {
+                        auto s = sub;
+                        s.align = Align::Center;
+                        return s;
+                    }());
+                }
+                for (size_t p = 0; p < seats.size(); ++p) {
+                    const float x = 64 + float(p % 2) * 600, y = 190 + float(p / 2) * 220;
+                    plate(x, y, 560, 190);
+                    const auto &seat = seats[p];
+                    text(x + 24, y + 18, "PLAYER " + std::to_string(p + 1), stencil(30, ink::chrome, ink::steel));
+                    if (!controller.connected(p)) {
+                        text(x + 24, y + 80, "no controller", marker(26, ink::faint, -2));
+                        continue;
+                    }
+                    if (!seat.joined) {
+                        text(x + 24, y + 80, "press A to join", marker(28, ink::dim, -3));
+                        continue;
+                    }
+                    const std::string part =
+                        lobbyParts.empty() ? std::string("guitar") : lobbyParts[size_t(seat.partRow)];
+                    text(x + 24, y + 70, part, body(26, ink::white));
+                    text(x + 24, y + 108, difficultyName(seat.diffRow), stencil(34, ink::acid, {110, 190, 30, 255}));
+                    text(x + 24, y + 152, "up/down difficulty   left/right part", body(16, ink::faint));
+                }
+                {
+                    size_t ready = 0;
+                    for (auto &s : seats)
+                        if (s.joined)
+                            ++ready;
+                    auto note = marker(26, ready >= 2 ? ink::acid : ink::dim, -2);
+                    note.align = Align::Center;
+                    text(640, 648, ready >= 2 ? "press PLUS to start" : "at least two players needed", note);
+                }
+                if (!message.empty())
+                    text(60, 690, message, marker(22, messageInk(), -1));
+                hints({{glyphAccept, "JOIN"}, {glyphBack, "LEAVE"}});
+            } else if (multi && song) {
+                // During the count-in the board is frozen where the song will
+                // resume, so everyone can see what is about to arrive.
+                const double time = screen == Screen::Playing ? songTime() : frozen;
+                const size_t n = multi->size();
+                // The wall is the room everyone is in, so it is drawn once behind
+                // every pane rather than once per pane, where the seams would show.
+                wall(ui, ink::crt);
+                for (size_t i = 0; i < n; ++i) {
+                    const auto &p = (*multi)[i];
+                    look::setViewport(i, n);
+                    highway(*song, p, settings, time - settings.videoMs / 1000, seatFretsNow[i], ui, splitBoard);
+                    // A compact HUD: at a quarter of the screen the full one does
+                    // not fit, and what matters mid-song is score, streak and how
+                    // close the meter is to the floor.
+                    {
+                        // The whole column sits below the shared song bar, which
+                        // is drawn once at screen level further down: in
+                        // quadrants a pane's first 90 units land under it.
+                        auto tag = stencil(26, ink::chrome, ink::steel);
+                        text(46, 190, "P" + std::to_string((i < lobbySeats.size() ? lobbySeats[i] : i) + 1), tag);
+                        text(46, 224, std::to_string(int(p.score)), stencil(44));
+                        text(46, 274, std::to_string(p.combo) + " streak",
+                             marker(24, p.combo ? ink::acid : ink::dim, -3));
+                        const int judged = p.hits + p.misses;
+                        text(46, 306, (judged ? std::to_string(p.hits * 100 / judged) : std::string("100")) + "% hit",
+                             body(20, ink::faint));
+                        sticker(1150, 200, 44, 9, p.powerActive ? ink::power : ink::blood,
+                                "x" + std::to_string(p.multiplier()));
+                        ledMeter(980, 258, 200, 16, 12, float(p.power), p.powerActive, ui);
+                        rockMeter(1218, 300, 26, 300, float(p.meter), ui, p.inRed());
+                    }
+                    // How the last note landed. Sized up from single player's
+                    // because a pane is drawn at half scale or less.
+                    if (p.lastTierAt > -1e8) {
+                        const float pop = decay(time - p.lastTierAt, .45);
+                        if (pop > 0) {
+                            static const char *const names[4] = {"", "GOOD", "GREAT", "PERFECT"};
+                            const SDL_Color tint = p.lastTier == 3   ? SDL_Color{255, 214, 84, 255}
+                                                   : p.lastTier == 2 ? ink::acid
+                                                                     : SDL_Color{170, 176, 190, 255};
+                            auto j = stencil(44 + 18 * pop, tint, mix(tint, SDL_Color{30, 30, 36, 255}, .5f));
+                            j.align = Align::Center;
+                            j.glow = alpha(tint, .55f * pop), j.glowSpread = 1.2f;
+                            text(640, 428 - 26 * pop, names[p.lastTier], j);
+                            // Which side of the beat it fell on, so a loose hit
+                            // is correctable rather than mysterious.
+                            if (p.lastTier < 3) {
+                                const float span = 190;
+                                const float off = std::clamp(float(p.lastError / p.window), -1.0f, 1.0f);
+                                rect(640 - span / 2, 500, span, 3, alpha(SDL_Color{120, 126, 142, 255}, pop * .8f));
+                                rect(640 + off * span / 2 - 3, 492, 6, 19, alpha(tint, pop));
+                                auto l = body(21, alpha(SDL_Color{170, 176, 190, 255}, pop * .9f));
+                                l.align = Align::Center;
+                                text(640, 516, p.lastError < 0 ? "EARLY" : "LATE", l);
+                            }
+                        }
+                    }
+                    // Streak and star-power shouts, this player's own.
+                    if (seatCalloutAt[i] > 0 && ui - seatCalloutAt[i] < 1.4) {
+                        const float t = float((ui - seatCalloutAt[i]) / 1.4);
+                        const float pop = 1 + .45f * std::pow(1 - std::min(t * 4, 1.0f), 3.0f);
+                        auto c = stencil(62 * pop, ink::acid, {255, 210, 40, 255});
+                        c.align = Align::Center, c.glow = alpha(ink::acid, .7f * (1 - t)), c.glowSpread = 1.3f;
+                        c.top = alpha(c.top, std::min(1.0f, (1 - t) * 3));
+                        c.bottom = alpha(c.bottom, std::min(1.0f, (1 - t) * 3));
+                        text(640, 182 - 30 * t, seatCallout[i], c);
+                    }
+                    look::clearViewport();
+                }
+                // Dividers, drawn full screen so they are one clean line rather
+                // than two half-lines meeting at a seam.
+                {
+                    const SDL_Color seam{20, 20, 24, 235};
+                    if (n == 2)
+                        rect(W / 2 - 2, 0, 4, H, seam);
+                    else if (n > 2) {
+                        rect(W / 2 - 2, 0, 4, H, seam);
+                        rect(0, H / 2 - 2, W, 4, seam);
+                    }
+                }
+                // The song is the one thing everyone shares, so it is named once
+                // for the room rather than repeated on all four boards. It sits
+                // on the screen, not in a pane: with two players that lands in
+                // the empty band above the panes, and with four it rides over
+                // the top of the boards, which is why the per-player columns
+                // start below it.
+                if (screen == Screen::Playing || screen == Screen::Countdown) {
+                    rect(0, 0, W, 78, {8, 8, 11, 170});
+                    tape(250, 40, 440, 54, -1.5f);
+                    {
+                        auto s = marker(26, ink::marker, -1.5f);
+                        s.align = Align::Center, s.maxWidth = 380;
+                        text(250, 24, plainTitle(song->name), s);
+                    }
+                    text(500, 30, song->artist, body(17, ink::dim));
+                    {
+                        auto t = body(21, ink::dim);
+                        t.align = Align::Right;
+                        text(1252, 18, timeText(audio.position()) + " / " + timeText(audio.duration()), t);
+                    }
+                    const float progress =
+                        float(std::clamp(audio.position() / std::max(1.0, audio.duration()), 0.0, 1.0));
+                    rect(976, 54, 276, 3, {60, 62, 74, 255});
+                    rect(976, 54, 276 * progress, 3, ink::chrome);
+                    glow(976 + 276 * progress, 55, 26, 26, alpha(ink::blood, .9f));
+                }
+                if (screen == Screen::Countdown) {
+                    rect(0, 0, W, H, {5, 5, 8, 120});
+                    const double left = std::max(0.0, 3 - (ui - countdownAt));
+                    const float beat = float(std::ceil(left) - left); // 0 at each new number
+                    const float pop = 1 + .35f * decay(beat, .35);
+                    auto s = stencil(150 * pop, ink::chrome, {150, 40, 40, 255});
+                    s.align = Align::Center, s.glow = alpha(ink::blood, .85f), s.glowSpread = 1.25f;
+                    text(640, 232 - 150 * (pop - 1) * .5f, std::to_string(std::max(1, int(std::ceil(left)))), s);
+                    auto ready = marker(30, {206, 208, 218, 255}, -3);
+                    ready.align = Align::Center;
+                    text(640, 430, "get ready", ready);
+                }
+                if (screen == Screen::Paused || screen == Screen::Results) {
+                    rect(0, 0, W, H, {5, 5, 8, 238});
+                    auto heading = stencil(84, ink::chrome, {116, 122, 138, 255});
+                    heading.align = Align::Center;
+                    heading.glow = alpha(ink::blood, .8f), heading.glowSpread = 1.2f;
+                    text(640, 40, screen == Screen::Paused ? "PAUSED" : "FINAL STANDINGS", heading);
+                    if (screen == Screen::Paused)
+                        menu(640, 300, 62, {"RESUME", "RESTART", "QUIT TO SONG LIST"}, pauseRow, ui, 560, 34);
+                    if (screen == Screen::Results) {
+                        const auto board = multi->standings();
+                        for (size_t r = 0; r < board.size(); ++r) {
+                            const auto &row = board[r];
+                            const float y = 168 + float(r) * 104;
+                            const bool winner = row.rank == 1;
+                            tape(640, y + 42, 1020, 92, r % 2 ? .6f : -.6f, winner ? 1.f : .82f);
+                            auto place = stencil(58, winner ? SDL_Color{255, 214, 84, 255} : ink::chrome,
+                                                 winner ? SDL_Color{190, 140, 20, 255} : ink::steel);
+                            text(170, y + 8, std::to_string(row.rank), place);
+                            const size_t seat = row.player < lobbySeats.size() ? lobbySeats[row.player] : row.player;
+                            text(240, y + 16, "PLAYER " + std::to_string(seat + 1), stencil(34, ink::white, ink::dim));
+                            const auto &p = (*multi)[row.player];
+                            text(240, y + 58, p.track->instrument + "  /  " + difficultyName(p.track->difficulty),
+                                 body(18, ink::faint));
+                            auto value = stencil(46);
+                            value.align = Align::Right;
+                            text(900, y + 18, grouped(int(row.score)), value);
+                            auto detail = body(19, ink::dim);
+                            detail.align = Align::Right;
+                            text(1100, y + 14, std::to_string(int(row.accuracy * 100)) + "% hit", detail);
+                            text(1100, y + 44, std::to_string(row.maxCombo) + " streak", detail);
+                            if (row.fullCombo && p.hits > 0)
+                                sticker(1178, y + 42, 32, -10, {255, 196, 40, 255}, "FC");
+                        }
+                    }
+                    auto note = marker(26, ink::dim, -2);
+                    note.align = Align::Center;
+                    if (screen == Screen::Results)
+                        text(640, 668, "A plays again   B returns to the song list", note);
+                    else
+                        hints({{glyphAccept, "SELECT"}, {glyphBack, "RESUME"}});
+                }
+                if (!message.empty())
+                    text(60, H - 28, message, marker(22, messageInk(), -1));
             } else if (session && song) {
                 double time = screen == Screen::Playing ? songTime() : frozen;
                 wall(ui, session->powerActive ? ink::power : ink::crt);

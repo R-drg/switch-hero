@@ -14,6 +14,22 @@ encoder), guitar and enchor tests, and both smoke runs. The Switch
 cross-build passes with no warnings. Details in docs/verification.md.
 
 Unverified on hardware, in priority order:
+- **Multiplayer with a pad joining or dropping mid-song.** Two and four players
+  were played start to finish on a console, docked, including the docked-only
+  gate, the lobby, the count-in, pause, the standings and single player
+  afterwards. What was not tried is a controller connecting or disconnecting
+  while a song runs. A wrong `pressAt` index would show up as one player's
+  timing being consistently off while the rest are fine.
+- **Split-screen frame pacing under load.** Four boards played correctly, but
+  the worst frame was never measured, and this console's pacing had not been
+  measured before this change either. Turn on the timing overlay on a dense
+  chart with four players. If it is bad, turn off Options -> Audio / video sync
+  -> Film grain first, then cut the HUD before the boards.
+- **Split-screen layout at other output resolutions.** `look::setViewport`
+  composes a scale and viewport on top of the logical-size letterbox and
+  re-derives it every call, so it follows the console changing output
+  resolution on its way into the dock. Two and four panes were confirmed square
+  on a 1080p television; other modes were not tried.
 - **Switch input thread** (`Controller` in `src/main.cpp`). Buttons are
   sampled every ~1 ms on core 1, and presses are stamped on the `now()` clock
   and fed to `pressTime()`. Check press timing with the results screen's timing

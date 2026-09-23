@@ -26,6 +26,7 @@ const std::array<SDL_Color, 6> lanes = {SDL_Color{40, 210, 70, 255}, {232, 36, 4
                                         {38, 112, 246, 255},          {255, 132, 18, 255}, {178, 76, 255, 255}};
 namespace {
 constexpr float Tau = 6.2831853f;
+bool grainOn = true;
 
 // ---------------------------------------------------------------- utilities
 struct Canvas {
@@ -745,6 +746,44 @@ void blitRotated(SDL_Texture *t, float cx, float cy, float w, float h, float ang
 }
 } // namespace
 
+// ------------------------------------------------------------- split screen
+SDL_FRect paneRect(size_t player, size_t players) {
+    if (players <= 1)
+        return {0, 0, float(W), float(H)};
+    if (players == 2)
+        // Side by side. A highway is a tall shape, so splitting the width
+        // suits it far better than stacking two 1280x360 letterbox slots.
+        return {float(player) * W / 2, 0, float(W) / 2, float(H)};
+    // Three or four share quadrants; with three, the fourth is left empty.
+    return {float(player % 2) * W / 2, float(player / 2) * H / 2, float(W) / 2, float(H) / 2};
+}
+
+void clearViewport() {
+    SDL_RenderSetViewport(renderer, nullptr);
+    // Re-asserting the logical size makes SDL recompute the letterbox scale
+    // from the window's *current* size. Caching that scale instead would go
+    // stale the moment the window is resized or the console changes output
+    // resolution on its way into the dock - which is exactly when multiplayer
+    // starts.
+    SDL_RenderSetLogicalSize(renderer, W, H);
+}
+
+void setViewport(size_t player, size_t players) {
+    clearViewport(); // start from a known full-screen scale
+    float baseScale = 1, ignored = 1;
+    SDL_RenderGetScale(renderer, &baseScale, &ignored);
+    if (!(baseScale > 0))
+        baseScale = 1;
+    const SDL_FRect pane = paneRect(player, players);
+    // Fit 1280x720 inside the pane without distorting it, then centre it.
+    const float s = std::min(pane.w / W, pane.h / H);
+    const float ox = pane.x + (pane.w - W * s) / 2, oy = pane.y + (pane.h - H * s) / 2;
+    SDL_RenderSetScale(renderer, baseScale * s, baseScale * s);
+    // Viewport units are pre-scale, so the offset divides by the same scale.
+    const SDL_Rect vp{int(std::lround(ox / s)), int(std::lround(oy / s)), W, H};
+    SDL_RenderSetViewport(renderer, &vp);
+}
+
 // ---------------------------------------------------------------- lifetime
 void init(SDL_Renderer *r) {
     renderer = r;
@@ -912,12 +951,18 @@ void grade(double time) {
     // into visible blocks, which looks like a compression artefact rather than
     // emulsion. Jump a whole tile each frame so it never sits still, and keep it
     // faint: grain should be felt, not seen.
+    // The grain is ~15 tiled fullscreen blits every frame. It is free on desktop
+    // and has never been measured on console, so it is the one effect that can
+    // be turned off on its own when frames are tight - split-screen above all.
+    if (!grainOn)
+        return;
     const auto step = uint32_t(time * 24);
     const float ox = hash01(step * 2 + 1) * 256, oy = hash01(step * 2 + 7) * 256;
     for (float ty = -oy; ty < H; ty += 256)
         for (float tx = -ox; tx < W; tx += 256)
             blit(grainTex, tx, ty, 256, 256, {255, 255, 255, 22});
 }
+void setGrain(bool on) { grainOn = on; }
 void tape(float cx, float cy, float w, float h, float angleDeg, float shade) {
     blitRotated(tapeTex, cx + 3, cy + 5, w, h, angleDeg, {0, 0, 0, 110});
     const Uint8 v = u8(255 * shade);
