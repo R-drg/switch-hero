@@ -6,7 +6,38 @@ Nintendo Switch homebrew, compatible with extracted Clone Hero song folders.
 Read README.md and docs/verification.md first. This is a prototype, not a port
 of Clone Hero or Guitar Hero source. Do not claim full format or score parity.
 
-## Verified state
+## 0.2 state (2026-09-23)
+Tagged `0.2`. What changed is in CHANGELOG.md. Desktop verification: 123
+core checks, 1,213 timing checks, audio codec + seek + preview tests (the
+local ffmpeg lacks libvorbis, so the Vorbis fixture is made with its native
+encoder), guitar and enchor tests, and both smoke runs. The Switch
+cross-build passes with no warnings. Details in docs/verification.md.
+
+Unverified on hardware, in priority order:
+- **Switch input thread** (`Controller` in `src/main.cpp`). Buttons are
+  sampled every ~1 ms on core 1, and presses are stamped on the `now()` clock
+  and fed to `pressTime()`. Check press timing with the results screen's timing
+  tip, and that the pad still works after sleep/resume.
+- **MP3 decoding** (`Mp3Decoder` in `src/audio.cpp`). Float output is now set
+  before `mpg123_open`; the old order produced 16-bit samples read as float
+  (half-length noise) with desktop libmpg123 1.33. Headerless files are still
+  scanned once.
+- **Frame pacing.** Turn on Options -> Audio / video sync -> Timing overlay.
+  The worst frame goes red above 20 ms. `look::grade()`'s grain loop is still
+  the first thing to cut.
+- **Gem render time.** The jewel gems are ray-marched on four threads at
+  startup (`gem3d` in `src/look.cpp`, about 0.24 s on an M-series Mac). It runs
+  behind the menus, and `prepareGems()` uploads the textures when a song or
+  video calibration starts.
+
+Design decisions from the owner to keep:
+- Gems are cut jewels in a gunmetal bezel, with a white table for hammer-ons
+  and cut stars for star notes. The owner picked this from rendered options,
+  after rejecting glossy chrome ("AI slop") and flat stickers ("flash game").
+- The fret buttons and highway were approved as they are.
+- B backs out of menus, except where B is a fret or being tested.
+
+## Verified state (0.1)
 Desktop Release build passed. CTest passed fixture generation, 64 core checks,
 and five audio codec tests plus playback/pause/restart. SDL virtual-controller
 smoke test passed. The original First Light demo is bundled.

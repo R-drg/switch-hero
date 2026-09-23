@@ -7,11 +7,12 @@ You need a Switch that runs homebrew (Atmosphere + the Homebrew Menu).
 1. COPY TO THE SD CARD
 ----------------------
 
-Copy the whole "switch-hero" folder content into the "switch" folder at
-the root of your SD card. When you're done it should look like this:
+Copy the whole "switch-hero" folder into the "switch" folder at the root
+of your SD card. When you're done it should look like this:
 
     SD card
     └── switch
+        └── switch-hero
             ├── switch-hero.nro
             └── songs
                 └── First-Light      (demo song)
@@ -32,9 +33,9 @@ needed if the download keyboard won't open.
 
 Either:
 
-  - Press + on the song list to download charts from Chorus Encore
-    (enchor.us). The console must be online. Y searches, A downloads,
-    minus goes back.
+  - Choose DOWNLOAD SONGS on the title menu (or press + on the song
+    list) to get charts from Chorus Encore (enchor.us). The console must
+    be online. Y searches, A downloads, B goes back.
 
   - Or copy extracted Clone Hero song folders into
     sd:/switch/switch-hero/songs/
@@ -45,12 +46,18 @@ Either:
 4. FIRST TIME SETUP
 -------------------
 
-Go to Settings (Y on the song list):
+Open OPTIONS on the title menu (or Y on the song list):
 
-  - Controller mode: press-to-hit (Joy-Con / Pro Controller), strum,
-    or Wii guitar.
-  - Audio / input offset: press A and tap along to the clicks.
-  - Visual offset: press A and tap as the notes cross the line.
-    Do the audio offset first.
+  - Gameplay > Controller mode: press-to-hit (Joy-Con / Pro Controller),
+    strum, or Wii guitar.
+  - Audio / video sync > Calibrate audio: tap along to the clicks.
+    Then Calibrate video: tap as the notes cross the line.
+    Do the audio one first.
+
+B goes back in every menu. On the song list: A picks a song, then choose the instrument and
+difficulty. X deletes a song, ZR changes the sort order, and left/right
+jump between letters.
 
 Hold minus for two seconds on any screen to get back to the song list.
+Settings are saved in settings.cfg and high scores in scores.cfg, both
+in sd:/switch/switch-hero/.

@@ -1,4 +1,4 @@
-# Switch Hero 0.1
+# Switch Hero 0.2
 
 A five-fret rhythm game for Nintendo Switch homebrew, written in C++17 and SDL2.
 It plays Clone Hero-style song folders, downloads charts from
@@ -8,15 +8,22 @@ Clone Hero's proprietary source.
 
 ![Gameplay](docs/gameplay.jpg)
 
-| Song list | Chart downloads | Offset calibration |
-|---|---|---|
-| ![Song list](docs/song-list.jpg) | ![Download screen](docs/download.jpg) | ![Calibration](docs/calibrate.jpg) |
+| Title menu | Song list |
+|---|---|
+| ![Title menu](docs/title.jpg) | ![Song list](docs/song-list.jpg) |
+| **Difficulty select** | **Results** |
+| ![Difficulty select](docs/difficulty.jpg) | ![Results](docs/results.jpg) |
+
+What changed in this release is in [CHANGELOG.md](CHANGELOG.md).
 
 **Status:** the desktop build and all automated tests pass, and the Switch build
 cross-compiles with devkitPro into `build-switch/switch-hero.nro`. Early console
 tests confirmed startup and song discovery. The latest build still needs a full
 run on hardware, covering audio, smooth scrolling, calibration and chart
-downloads. Don't treat the desktop tests as a Switch performance benchmark.
+downloads. New in 0.2 and still untested on a console: the input thread's
+press timing, the MP3 decode fix, frame pacing with the new effects (turn on
+the timing overlay to check), and how long the startup gem render takes. Don't
+treat the desktop tests as a Switch performance benchmark.
 
 ## Install on a Switch
 
@@ -32,7 +39,8 @@ sd:/switch/switch-hero/
 Launch it from the Homebrew Menu. Hold R while starting any game to open the
 Homebrew Menu with full memory. That's recommended for big songs and needed if
 the download keyboard won't open. Settings are saved to
-`sd:/switch/switch-hero/settings.cfg`. [`release/INSTALL.txt`](release/INSTALL.txt)
+`sd:/switch/switch-hero/settings.cfg` and high scores to
+`sd:/switch/switch-hero/scores.cfg`. [`release/INSTALL.txt`](release/INSTALL.txt)
 has the same steps for the SD card.
 
 Coming from the prototype when it was called Fretboard? Move your songs and
@@ -46,14 +54,42 @@ delete the old folder so the Homebrew Menu only lists Switch Hero.
   1% (the approach YARG uses). Notes don't wobble with the audio backend's
   buffer steps. Each note sits exactly where the highway's perspective puts it,
   and notes fade in from the far end of the board.
-- **Timing grades.** **Perfect** within 25 ms, **great** within 45 ms and
-  **good** out to the 70 ms edge of the window, worth 1.35x, 1.15x and 1x. On
-  desktop, presses are judged at their input timestamps rather than at the
-  frame that reads them.
+- **Hit windows and timing grades.** How far off a note can be and still
+  count depends on the difficulty: on the Normal setting, +-85 ms on Expert,
+  92 on Hard, 100 on Medium and 110 on Easy. Options -> Gameplay -> Hit window
+  makes that Strict (about the old fixed 70 ms on Expert) or Lenient. Inside the
+  window, **perfect** is the closest ~36% of it, **great** the closest ~64%,
+  and the rest is **good**, worth 1.35x, 1.15x and 1x. Presses are judged at
+  their input timestamps (SDL events on desktop, the input thread on Switch)
+  rather than at the frame that reads them.
+- **Timing tips.** If a song's hits were consistently early or late (the
+  median of at least 12 hits is 6 ms or more off), the results screen says so
+  and offers **Fix timing**, which moves the audio offset by that amount.
 - **Offset calibration.** Tap along to set the audio and visual offsets (see
   [Calibration](#calibration)).
 - **In-game chart downloads** from Chorus Encore (see
   [Downloading charts](#downloading-charts)).
+- **Cut-jewel gems and classic fire.** Gems are rendered in 3D once at
+  startup, on background threads. A ray marcher lights each sprite pixel of a
+  cut jewel in a gunmetal bezel: eight crown facets rise to a flat table, and
+  each facet catches the room and the stage light up the highway differently.
+  The result is saved as textures, so a gem costs one sprite per frame. Gems
+  flatten slightly toward the far end of the board, as the view angle there is
+  shallower. Hammer-ons light the table up white, which stays readable at play
+  size, and star notes are cut stars. Hits throw orange fire, a shockwave, and spark streaks. Perfect hits burn
+  bigger with a star glint, and star power burns blue-white. The strike line
+  pulses with the beat. It's all baked into textures at startup, so it costs
+  little per frame.
+- **High scores.** Your best score, stars and full combos are saved for each
+  song, part and difficulty. They show on the song list and difficulty screen,
+  and the results screen calls out a new best.
+- **Smooth browsing.** Charts and covers load on a background thread once the
+  cursor rests, and previews open their audio off the main thread too, so
+  scrolling a big library never hitches. The song list sorts by title, artist
+  or best stars (ZR), and left/right jump between letters, or between star
+  counts when sorted by stars.
+- **Song previews.** Rest on a song and it fades in from its
+  `preview_start_time` (or 30% of the way in), then loops.
 - **Rock meter, star power and no-fail mode.** A miss drains the meter three
   times as fast as a hit refills it. Star power pulls it back twice as hard.
 - **Three controller modes:** press-to-hit for Joy-Cons and Pro Controllers,
@@ -73,20 +109,66 @@ several face buttons under one thumb.
 | Strum, if enabled | D-pad up/down | Up/down or Space |
 | Star power | X | Left Shift |
 | Pause / resume | Plus | P |
-| Choose song | D-pad up/down | Up/down |
-| Choose instrument/difficulty | L/R or D-pad left/right | Left/right |
-| Play / confirm | A | Enter |
-| Settings from the song list | Y | Tab |
+| Move through menus | D-pad up/down | Up/down |
+| Jump to the next/previous letter in the song list | D-pad left/right | Left/right |
+| Change the song list order (title, artist, stars) | ZR | Z |
+| Select / confirm | A | Enter |
+| Back (menus) | B or Minus | Escape |
+| Options from the song list | Y | Tab |
 | Download charts from the song list | Plus | O |
-| Toggle no-fail from the song list | X | N |
-| Restart while paused / at results | Y | R |
-| Back / exit song | Minus | Escape |
+| Delete a song from the song list | X | Delete or X |
+| Toggle no-fail on the difficulty screen | X | N |
 
 Holding Minus for two seconds returns to the song list from any screen.
+
+B backs out of every menu. It's ignored wherever B is being pressed as a
+button rather than to leave: during a song and the resume count-in (it's the
+orange fret), while calibration is taking taps, while rebinding a fret, in the
+controller test, and in Wii guitar mode (the red fret is back there). Minus
+always works as back.
+
+### Menus
+
+The game follows the Guitar Hero flow. The title menu offers **Quickplay**,
+**Download songs**, **Options** and **Quit**. Quickplay opens the song list.
+Picking a song asks for an **instrument** (skipped when the chart only has
+one part), then a **difficulty**. All four difficulties are always listed,
+and the ones the chart doesn't have are greyed out and skipped. The song list
+shows each part's charted difficulties as E/M/H/X badges. The game remembers
+the last part and difficulty you played and opens the next song on them.
+
+**Pause** (Plus) offers resume, restart, change difficulty and quit to the song
+list. B, Minus or Plus resumes, so backing out of a pause never throws the song
+away. Resuming counts 3-2-1 over the frozen highway first, and Plus or Minus
+during the count goes back to the pause menu. The results screen offers
+continue, retry and change difficulty. It ignores buttons for its first
+second, so frets still being played as a song ends or fails (B is the orange
+fret) can't skip past it; the button hints appear once it's listening. The song list opens on the last song
+you played.
+
+**Options** has four pages, and each row explains itself at the bottom of the
+panel:
+
+- **Gameplay:** controller mode, no fail, note speed, lefty flip (mirrors
+  the highway so green is on the right).
+- **Audio:** music volume (songs and previews) and sound effects volume.
+- **Audio / video sync:** calibrate audio, audio offset, calibrate video,
+  visual offset, and a timing overlay that shows average and worst frame
+  times over each second (plus audio clock drift during a song), for checking
+  smoothness on the console.
+- **Controls:** fret buttons, controller test, reset all options (press A
+  twice to confirm).
+
+Options are saved when you leave the options screen.
 
 On desktop gamepads, directions refer to physical button positions:
 south = Switch B / Xbox A; east = Switch A / Xbox B; west = Switch Y / Xbox X;
 north = Switch X / Xbox Y. Analog triggers count as pressed at about half travel.
+
+On the Switch, buttons are sampled on their own thread about once a
+millisecond, so a press is judged when it arrived rather than rounded to the
+next frame. That removes up to 16.7 ms of rounding, but not the controller's
+own report interval.
 
 ### Press-to-hit mode
 
@@ -116,12 +198,14 @@ anchoring for single notes. It has the leniency real guitar games have:
 - Strumming a hammer-on you already played is ignored rather than punished.
 
 Hammer-ons show a white-hot core. Star-power notes are star-shaped, with the
-same core when they're hammer-ons. Judgement and scoring are this game's own
+same core when they're hammer-ons. Miss any note of a star phrase and the
+phrase is broken: the rest of its notes turn back into regular gems and it
+earns no star power. Judgement and scoring are this game's own
 rules, not a promise of exact Clone Hero score parity.
 
 ### Wii guitar over Bluetooth
 
-Select **WII GUITAR** in Settings → Controller mode. This uses fixed five-fret
+Select **WII GUITAR** in Options → Gameplay → Controller mode. This uses fixed five-fret
 bindings, strum judgement, guitar menu shortcuts, and Minus for star power.
 Bluetooth needs the supplied **MissionControl guitar-extension patch** from
 [`integrations/missioncontrol/`](integrations/missioncontrol/README.md).
@@ -129,14 +213,15 @@ Installing the game alone, or using stock MissionControl, isn't enough.
 
 Guitar mode only takes over player one while a controller is connected there.
 Plus and Minus always respond from the normal controller, so guitar mode can't
-lock you out of the game. **Settings → Controller test** shows live input for
+lock you out of the game. **Options → Controls → Controller test** shows live input for
 diagnosing a guitar. Tilt, whammy effects and touch-strip inputs aren't
 implemented.
 
 ## Calibration
 
-Settings has an **audio / input offset** and a **visual offset**. Select
-either one and press A (green on a Wii guitar) to calibrate by tapping along:
+Options → Audio / video sync has an **audio / input offset** and a **visual
+offset**. Select **Calibrate audio** or **Calibrate video** and press A (green
+on a Wii guitar) to calibrate by tapping along:
 
 1. **Audio / input offset:** a click track plays through the song channel, so
    it has the same latency as the music. Tap any fret or strum on every click
@@ -148,8 +233,8 @@ either one and press A (green on a Wii guitar) to calibrate by tapping along:
 Each tap is scored against the nearest beat, and the median error becomes the
 offset. The median means one fumbled tap can't throw it off. The result screen
 shows the old and new values and warns you when your taps were uneven. A keeps
-the new value, Y retries, and Minus cancels. Left/right still fine-tunes either
-offset in 5 ms steps. A positive audio offset judges notes later.
+the new value, Y retries, and B or Minus cancels. Left/right on either offset row
+fine-tunes it in 5 ms steps. A positive audio offset judges notes later.
 
 ## Song library
 
@@ -160,8 +245,8 @@ parsed when you select the song, and any problems are reported then.
 
 ### Downloading charts
 
-Press **Plus** on the song list (or **O** on a keyboard) to browse Chorus
-Encore, the community Clone Hero chart index. The screen opens on the newest
+Choose **Download songs** on the title menu, or press **Plus** on the song list
+(**O** on a keyboard), to browse Chorus Encore, the community Clone Hero chart index. The screen opens on the newest
 charts. Only charts with a lead guitar part are listed.
 
 - **Y** searches by song, artist or charter. The Switch opens its system
@@ -170,8 +255,9 @@ charts. Only charts with a lead guitar part are listed.
   near the end of the list.
 - **A** downloads the selected chart into the songs folder, as
   `Artist - Name (Charter)`.
-- **Minus** cancels a download that's running. Otherwise it goes back to the
-  song list, which rescans and selects the newest download.
+- **B** (or Minus) cancels a download that's running. Otherwise it goes back. If
+  anything was downloaded, it goes to the song list, which rescans and selects
+  the newest download.
 
 Each row shows the guitar intensity rating (six pips, or `?` when the chart
 has no rating), the song length, and **in library** once you have it.
@@ -183,7 +269,16 @@ game doesn't play them. The package's metadata becomes `song.ini`.
 
 The Switch needs an internet connection. Networking only starts the first time
 you open the download screen. HTTPS uses the console's own SSL service.
-Requests identify the game as `switch-hero/0.1`.
+Requests identify the game as `switch-hero/0.2`.
+
+### Deleting songs
+
+Press **X** on the song list (the blue fret on a Wii guitar, Delete on a
+keyboard) to delete the selected song. The game asks first, starting on
+**Keep it**, and names the folder it will remove. Deleting removes that song's
+folder and everything in it from the SD card, along with its high scores. It
+can't be undone. The game only ever deletes a folder inside the songs folder,
+never the songs folder itself.
 
 ### Copying songs yourself
 
@@ -273,9 +368,9 @@ comes back when you recover. If the meter empties, the song ends in failure.
 Songs with a single mixed audio file keep playing normally in the red, since
 there's no separate guitar to mute.
 
-Turn the meter off with **No-fail mode** in Settings, or with X (N on a
-keyboard, blue fret on a Wii guitar) in the song list. The song list shows
-which mode is set.
+Turn the meter off with **No fail** in Options → Gameplay, or with X (N on a
+keyboard, blue fret on a Wii guitar) on the difficulty screen, which shows
+whether it's on.
 
 ## Look
 
@@ -308,8 +403,8 @@ with engraved rules, and a long score shrinks to fit it.
 
 The board is only lightly foreshortened, and the default lookahead is 1.2
 seconds. A harder taper or a longer lookahead crushes most of the chart into the
-top of the highway. If fast runs are hard to read, shorten **Highway travel**
-in Settings.
+top of the highway. If fast runs are hard to read, raise **Note speed**
+in Options → Gameplay.
 
 `tools/make_fonts.py` re-bakes the `.font` atlases from the TTFs (needs Pillow).
 

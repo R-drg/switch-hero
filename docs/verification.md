@@ -1,3 +1,48 @@
+# Verification — 2026-09-23 (0.2)
+
+Desktop (macOS, Apple Silicon) Release build, and the devkitPro
+`devkita64:latest` cross-build of the NRO (no warnings; header `NRO0`).
+
+**Automated tests**
+- `core_tests`: 123 checks. New this release: star-phrase breaking, hit
+  windows scaled by difficulty and leniency (a 95 ms late press counts on
+  Easy/Normal and misses on Strict Expert), tiers scaling with the window,
+  scores round trip (folder names with spaces, damaged lines, best-only
+  keeping, full-combo badge), `Scores::forget`, the song-delete guard (refuses
+  the library itself, `.`, `..` escapes and siblings), and sort keys and jump
+  letters.
+- `timing_tests`: 1,213 checks. `guitar_tests` and `enchor_tests`: pass.
+- `audio_tests`: five codecs plus a seek-to-half check on each and a preview
+  that starts with no lead-in. The local ffmpeg has no libvorbis, so the
+  `.ogg` fixture was made with `-c:a vorbis -strict -2`.
+- Smoke: `--smoke` and `--smoke-wii-guitar` hit notes through the SDL virtual
+  controller. With a hook printing per-note error, judgement was unbiased
+  (every hit within +-14 ms, matching when the test presses).
+
+**Targeted checks with temporary hooks (removed afterwards)**
+- Browsing: a 300-song scratch library (12,000-note charts, 256 px covers)
+  scrolled every frame. The main-thread cost of a cursor step fell from
+  8.2 ms to 0.003 ms. Moving a cover texture's destruction to after present
+  removed an 8 ms renderer stall. No stale load was ever installed.
+- Preview start on the main thread fell from 2-8 ms to under 0.01 ms once the
+  stems open and seek on a background thread.
+- MP3: the game's `Mp3Decoder` class, extracted verbatim and built against
+  desktop libmpg123 1.33.7, decoded CBR, VBR, header-less VBR and ID3-tagged
+  files to the right length with sane samples, and seeked correctly. The
+  previous open order produced half-length noise with the same library.
+- B-back: injected presses on each screen. The song list goes back to the
+  title menu, the difficulty screen to the instrument step, and an options
+  page to its category list. B is ignored in the controller test, while
+  rebinding, during play and the count-in, and resumes from the pause menu.
+- Results lockout: a failed song with B pressed 25 ms into the fail screen
+  stayed on results; B after 1.2 s continued to the song list.
+- Screenshots of every new screen were reviewed, and the README images were
+  re-captured from this build.
+
+**Not verified on a console:** the Switch input thread, MP3 decoding with the
+devkitPro libmpg123, frame pacing with the new effects, and the startup gem
+render time. See HANDOFF.md for what to check.
+
 # Verification — 2026-09-17
 
 UI rebuild: the imported GH II Deluxe textures were deleted and the game
