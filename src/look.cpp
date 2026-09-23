@@ -11,7 +11,11 @@
 #pragma GCC diagnostic pop
 #include <algorithm>
 #include <cmath>
+#include <array>
 #include <functional>
+#include <future>
+#include <mutex>
+#include <thread>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -207,8 +211,9 @@ std::string sanitize(const std::string &s) {
 
 // ---------------------------------------------------------------- baked art
 SDL_Texture *glowTex = nullptr, *wallTex = nullptr, *vignetteTex = nullptr, *scanTex = nullptr, *tapeTex = nullptr,
-            *metalTex = nullptr, *gripTex = nullptr, *grainTex = nullptr;
-constexpr int FlameFrames = 4;
+            *metalTex = nullptr, *gripTex = nullptr, *grainTex = nullptr, *ringTex = nullptr, *sparkTex = nullptr,
+            *flareTex = nullptr;
+constexpr int FlameFrames = 8;
 std::array<std::array<SDL_Texture *, FlameFrames>, 2> flameTex{};
 constexpr int SpriteW = 256, SpriteH = 192;
 constexpr float SpriteCx = 128, SpriteCy = 72, SpriteRx = 116, SpriteRy = 50;
@@ -249,68 +254,305 @@ SDL_Color shade(SDL_Color c, float k, int add = 0) {
     auto f = [&](Uint8 v) { return Uint8(std::clamp(int(v * k) + add, 0, 255)); };
     return {f(c.r), f(c.g), f(c.b), c.a};
 }
-SDL_FPoint spritePoint(float scale, float angle, float dy = 0) {
-    return {SpriteCx + std::cos(angle) * SpriteRx * scale, SpriteCy + dy + std::sin(angle) * SpriteRy * scale};
-}
-void glint(float scale, float dy) {
-    SDL_FPoint c{SpriteCx - SpriteRx * .28f * scale, SpriteCy + dy - SpriteRy * .34f * scale};
-    fan(outline(c.x, c.y, SpriteRx * .22f * scale, SpriteRy * .13f * scale, false, 20), c, {255, 255, 255, 200},
-        {255, 255, 255, 0});
-}
-void bolts(float radius, float dy = 0) {
-    for (int i = 0; i < 4; ++i) {
-        SDL_FPoint p = spritePoint(radius, Tau / 8 + i * Tau / 4, dy);
-        fan(outline(p.x, p.y + 1.5f, 8, 5, false, 6), {p.x, p.y + 1.5f}, {10, 10, 12, 255}, {10, 10, 12, 255});
-        fan(outline(p.x, p.y, 7, 4.4f, false, 6), {p.x - 2, p.y - 1}, {170, 172, 184, 255}, {58, 60, 68, 255});
+// The band between two outlines of the same point count, shaded from the outer
+// edge to the inner one.
+void ring(const std::vector<SDL_FPoint> &outer, const std::vector<SDL_FPoint> &inner, SDL_Color out, SDL_Color in) {
+    std::vector<SDL_Vertex> v;
+    std::vector<int> idx;
+    for (size_t i = 0; i < outer.size(); ++i) {
+        v.push_back({outer[i], out, {0, 0}});
+        v.push_back({inner[i], in, {0, 0}});
+        int a = int(i * 2), b = int((i + 1) % outer.size() * 2);
+        idx.insert(idx.end(), {a, a + 1, b, b, a + 1, b + 1});
     }
+    geometry(nullptr, v, idx);
 }
-// Chrome-rimmed, bolted gems with a glossy candy-paint cap.
-void bakeGem(SDL_Color c, GemStyle style) {
-    const bool starShape = style == GemStar || style == GemStarHopo;
-    const bool hammer = style == GemHopo || style == GemStarHopo;
-    auto shape = [&](float s, float dy = 0) {
-        return outline(SpriteCx, SpriteCy + dy, SpriteRx * s, SpriteRy * s, starShape);
-    };
-    SDL_FPoint centre{SpriteCx, SpriteCy};
-    const float depth = 34;
-    fan(outline(SpriteCx, SpriteCy + depth + 8, SpriteRx * 1.08f, SpriteRy * 1.08f, false), {SpriteCx, SpriteCy + depth + 8},
-        {0, 0, 0, 170}, {0, 0, 0, 0});
-    extrude(shape(1), depth, {58, 60, 68, 255}, {10, 10, 14, 255});
-    extrude(shape(1), depth * .38f, {236, 238, 246, 255}, {104, 108, 120, 255});
-    fan(shape(1), {SpriteCx - 24, SpriteCy - 18}, {255, 255, 255, 255}, {132, 136, 150, 255});
-    fan(shape(.93f), {SpriteCx + 30, SpriteCy + 14}, {150, 154, 166, 255}, {214, 216, 226, 255});
-    if (!starShape)
-        bolts(.93f);
-    fan(shape(.86f), centre, {6, 6, 8, 255}, {24, 24, 30, 255});
-    extrude(shape(.8f, -8), 8, shade(c, .5f), shade(c, .26f));
-    fan(shape(.8f, -8), {SpriteCx - 24, SpriteCy - 26}, shade(c, 1, 95), shade(c, .58f));
-    if (hammer) {
-        // Hammer-ons glow white-hot in the middle, star notes included.
-        fan(shape(.4f, -8), {SpriteCx, SpriteCy - 8}, {255, 255, 255, 255}, shade(c, 1, 140));
-        fan(shape(.22f, -8), {SpriteCx, SpriteCy - 8}, {255, 255, 255, 255}, {255, 255, 255, 255});
-    }
-    glint(.8f, -8);
+void flat(const std::vector<SDL_FPoint> &edge, SDL_Color c) {
+    SDL_FPoint centre{0, 0};
+    for (auto p : edge)
+        centre.x += p.x / edge.size(), centre.y += p.y / edge.size();
+    fan(edge, centre, c, c);
 }
-// Fret buttons: bolted chrome ring around a dark well with a neon lining.
+const SDL_Color paper{246, 243, 234, 255}, paperEdge{176, 172, 162, 255}, inkBlack{14, 14, 16, 255};
+// The one highlight a printed fret button gets: a hard-edged flat shape, not a
+// gradient, in keeping with their die-cut look.
+void shine(float cx, float cy, float rx, float ry) {
+    flat(outline(cx - rx * .34f, cy - ry * .42f, rx * .3f, ry * .15f, false, 24), {255, 255, 255, 235});
+    flat(outline(cx + rx * .02f, cy - ry * .5f, rx * .06f, ry * .06f, false, 12), {255, 255, 255, 235});
+}
+// Fret buttons are printed die-cut rings: a white border, black ink,
+// a band of lane colour and a black well. Pressed, the well fills with colour.
 void bakeReceptor(SDL_Color c, bool pressed) {
     auto shape = [&](float s, float dy = 0) { return outline(SpriteCx, SpriteCy + dy, SpriteRx * s, SpriteRy * s, false); };
-    const float depth = 24;
-    fan(outline(SpriteCx, SpriteCy + depth + 8, SpriteRx * 1.06f, SpriteRy * 1.06f, false), {SpriteCx, SpriteCy + depth + 8},
-        {0, 0, 0, 180}, {0, 0, 0, 0});
-    extrude(shape(1), depth, {70, 72, 82, 255}, {12, 12, 16, 255});
-    fan(shape(1), {SpriteCx - 24, SpriteCy - 18}, {236, 238, 246, 255}, {96, 100, 112, 255});
-    fan(shape(.93f), {SpriteCx + 30, SpriteCy + 14}, {110, 114, 126, 255}, {190, 192, 204, 255});
-    bolts(.93f);
-    fan(shape(.84f), {SpriteCx, SpriteCy + 10}, {2, 2, 3, 255}, {20, 20, 26, 255});
-    fan(shape(.78f), {SpriteCx, SpriteCy}, pressed ? SDL_Color{255, 255, 255, 255} : shade(c, 1, 60),
-        pressed ? shade(c, 1, 120) : shade(c, .8f));
-    fan(shape(.66f), {SpriteCx, SpriteCy + 6}, {12, 12, 16, 255}, {26, 26, 32, 255});
+    const float lift = 10;
+    flat(outline(SpriteCx + 6, SpriteCy + lift + 10, SpriteRx, SpriteRy, false), {0, 0, 0, 130});
+    extrude(shape(1), lift, paperEdge, shade(paperEdge, .6f));
+    flat(shape(1), paper);
+    flat(shape(.88f), inkBlack);
+    flat(shape(.8f), c);
+    flat(shape(.66f), inkBlack);
     if (pressed) {
-        extrude(shape(.62f, 2), 5, shade(c, .55f), shade(c, .32f));
-        fan(shape(.62f, 2), {SpriteCx - 20, SpriteCy - 16}, shade(c, 1, 130), shade(c, .78f));
-        glint(.62f, 2);
-    }
+        flat(shape(.56f, 2), shade(c, .62f));
+        flat(outline(SpriteCx, SpriteCy - 1, SpriteRx * .52f, SpriteRy * .46f, false), c);
+        shine(SpriteCx, SpriteCy, SpriteRx * .52f, SpriteRy * .52f);
+    } else
+        // An empty well still shows its depth: the back wall catches a little light.
+        ring(shape(.66f), shape(.5f, 6), {60, 60, 68, 255}, inkBlack);
 }
+// ---------------------------------------------------------------- 3D gems
+// Gems are rendered, not drawn: each sprite pixel is ray-marched once at start
+// up against a signed distance field of the gem, lit by one key light and the
+// room, with soft shadows and ambient occlusion, then flattened into a texture.
+// Each gem is a cut jewel in a gunmetal bezel: eight crown facets rising to a
+// flat table. Star notes are cut stars; hammer-ons light the table up white,
+// which stays readable at play size where a small mark would not.
+namespace gem3d {
+struct V3 {
+    float x, y, z;
+};
+V3 operator+(V3 a, V3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+V3 operator-(V3 a, V3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+V3 operator*(V3 a, float k) { return {a.x * k, a.y * k, a.z * k}; }
+float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+V3 norm(V3 a) { return a * (1 / std::sqrt(std::max(1e-12f, dot(a, a)))); }
+enum Material { Bezel, Table, Jewel };
+// The view matches the sprite: the top face reads as an ellipse Ry/Rx tall, so
+// the board is seen from asin(Ry/Rx) above; one unit is SpriteRx pixels.
+const float SinView = SpriteRy / SpriteRx, CosView = std::sqrt(1 - SinView * SinView);
+const V3 ToCamera{0, SinView, CosView};
+const V3 KeyLight = norm({-.55f, .85f, .5f});
+constexpr float Anchor = .44f; // height that lands on the sprite's anchor point
+// Profiles in the board plane (x, z); negative inside.
+float roundProfile(float x, float z, float r) { return std::sqrt(x * x + z * z) - r; }
+float starProfile(float x, float z, float r) {
+    // Five-point star pointing down the highway (-z), after Inigo Quilez.
+    const float k1x = .809016994f, k1y = -.587785252f, rf = .5f;
+    float px = std::abs(x), py = -z;
+    float d = std::max(k1x * px + k1y * py, 0.0f);
+    px -= 2 * d * k1x, py -= 2 * d * k1y;
+    d = std::max(-k1x * px + k1y * py, 0.0f);
+    px -= 2 * d * -k1x, py -= 2 * d * k1y;
+    px = std::abs(px);
+    py -= r;
+    const float bax = rf * -k1y, bay = rf * k1x - 1;
+    const float h = std::clamp((px * bax + py * bay) / (bax * bax + bay * bay), 0.0f, r);
+    const float ex = px - bax * h, ey = py - bay * h;
+    return std::sqrt(ex * ex + ey * ey) * ((py * bax - px * bay) > 0 ? 1.0f : -1.0f);
+}
+// A profile extruded between two heights with its edges rounded by `r`.
+float extrude(float profile, float y, float y0, float y1, float r) {
+    const float wx = profile + r, wy = std::abs(y - (y0 + y1) / 2) - (y1 - y0) / 2 + r;
+    return std::min(std::max(wx, wy), 0.0f) + std::sqrt(std::max(wx, 0.0f) * std::max(wx, 0.0f) +
+                                                         std::max(wy, 0.0f) * std::max(wy, 0.0f)) - r;
+}
+struct Shape {
+    bool star, hammer;
+    float map(V3 p, Material *m = nullptr) const {
+        const float bezel = star ? extrude(starProfile(p.x, p.z, 1.05f), p.y, 0, .22f, .05f)
+                                 : extrude(roundProfile(p.x, p.z, 1), p.y, 0, .22f, .05f);
+        float jewel;
+        if (star) {
+            // A cut star: flanks bevelled up from the edge to a flat table.
+            const float edge = starProfile(p.x, p.z, .9f);
+            const float top = .28f + std::min(.16f, .75f * std::max(0.0f, -edge));
+            jewel = std::max({edge, .12f - p.y, (p.y - top) * .8f});
+        } else {
+            // A round brilliant, simplified: a girdle, eight crown facets and a
+            // steeper ring below them, all meeting a flat table.
+            jewel = std::max({roundProfile(p.x, p.z, .8f), .12f - p.y, p.y - .44f});
+            for (int k = 0; k < 8; ++k) {
+                const float a = (k + .5f) * Tau / 8, phi = .84f; // facet tilt from vertical
+                const V3 n{std::cos(a) * std::sin(phi), std::cos(phi), std::sin(a) * std::sin(phi)};
+                jewel = std::max(jewel, dot(p, n) - (.8f * std::sin(phi) + .26f * std::cos(phi)));
+                const float b = k * Tau / 8, psi = 1.1f;
+                const V3 q{std::cos(b) * std::sin(psi), std::cos(psi), std::sin(b) * std::sin(psi)};
+                jewel = std::max(jewel, dot(p, q) - (.8f * std::sin(psi) + .2f * std::cos(psi)));
+            }
+        }
+        const float d = std::min(bezel, jewel);
+        if (m)
+            *m = d == bezel ? Bezel : (hammer && p.y > (star ? .40f : .435f)) ? Table : Jewel;
+        return d;
+    }
+    V3 normal(V3 p) const {
+        const float e = .0015f;
+        const V3 a{1, -1, -1}, b{-1, -1, 1}, c{-1, 1, -1}, d{1, 1, 1};
+        return norm(a * map(p + a * e) + b * map(p + b * e) + c * map(p + c * e) + d * map(p + d * e));
+    }
+    float occlusion(V3 p, V3 n) const {
+        float o = 0, weight = 1;
+        for (int i = 1; i <= 5; ++i) {
+            const float h = .03f * float(i);
+            o += (h - map(p + n * h)) * weight;
+            weight *= .6f;
+        }
+        return std::clamp(1 - 2.2f * o, 0.0f, 1.0f);
+    }
+    float shadow(V3 p) const {
+        float lit = 1, t = .02f;
+        for (int i = 0; i < 32 && t < 2.5f; ++i) {
+            const float h = map(p + KeyLight * t);
+            if (h < .0005f)
+                return 0;
+            lit = std::min(lit, 10 * h / t);
+            t += std::clamp(h, .01f, .2f);
+        }
+        return std::clamp(lit, 0.0f, 1.0f);
+    }
+};
+// What the gems reflect: a dim room with a lighter ceiling, a bright stage
+// softbox up the highway behind them (it is what puts a highlight on the tops),
+// and a weaker fill off to the right. Reflections are what make lacquer read as
+// lacquer and metal as metal; direct lights alone gave plastic toys.
+float environment(V3 r) {
+    float e = r.y > 0 ? .06f + .45f * std::pow(r.y, .7f) : .015f;
+    const V3 softbox = norm({-.18f, .45f, -.87f}), fill = norm({.85f, .35f, .2f});
+    e += std::pow(std::max(0.0f, dot(r, softbox)), 70.0f) * 7;
+    e += std::pow(std::max(0.0f, dot(r, fill)), 16.0f) * .6f;
+    return e;
+}
+// Per pixel, lighting kept as terms so one render serves every lane colour:
+// colour = laneColour * cap + rest + white * spec, all in linear light.
+struct Texel {
+    float cap = 0, rest[3] = {0, 0, 0}, spec = 0, cover = 0, shadow = 0;
+};
+constexpr int Super = 2; // 2x2 samples per pixel for clean edges
+std::vector<Texel> render(bool star, bool hammer) {
+    const Shape shape{star, hammer};
+    std::vector<Texel> out(size_t(SpriteW) * SpriteH);
+    const V3 right{1, 0, 0}, up{0, CosView, -SinView}, dir = ToCamera * -1;
+    for (int py = 0; py < SpriteH; ++py)
+        for (int px = 0; px < SpriteW; ++px) {
+            Texel t;
+            int hits = 0, misses = 0;
+            float shadowSum = 0;
+            for (int sy = 0; sy < Super; ++sy)
+                for (int sx = 0; sx < Super; ++sx) {
+                    const float u = (px + (sx + .5f) / Super - SpriteCx) / SpriteRx;
+                    const float v = -(py + (sy + .5f) / Super - SpriteCy) / SpriteRx;
+                    // Start well in front of the gem and march back along the view.
+                    V3 p = right * u + up * v + V3{0, Anchor, 0} + ToCamera * 3;
+                    float travelled = 0;
+                    bool hit = false;
+                    if (std::abs(u) < 1.2f)
+                        for (int i = 0; i < 96 && travelled < 6; ++i) {
+                            const float d = shape.map(p);
+                            if (d < .0008f) {
+                                hit = true;
+                                break;
+                            }
+                            p = p + dir * (d * .85f), travelled += d * .85f;
+                        }
+                    if (!hit) {
+                        // The board: where the ray meets y = 0, shade it by the
+                        // gem's shadow and by how close the gem sits (contact).
+                        V3 q = right * u + up * v + V3{0, Anchor, 0} + ToCamera * 3;
+                        const float tGround = q.y / SinView;
+                        q = q + dir * tGround;
+                        float a = 0;
+                        if (std::abs(q.x) < 1.8f && std::abs(q.z) < 1.8f) {
+                            const float contact = 1 - std::clamp(shape.map(q) / .35f, 0.0f, 1.0f);
+                            const float cast = 1 - shape.shadow(q + V3{0, .002f, 0});
+                            a = std::max(cast * .45f, contact * contact * .6f);
+                        }
+                        shadowSum += a, ++misses;
+                        continue;
+                    }
+                    ++hits;
+                    Material m;
+                    shape.map(p, &m);
+                    const V3 n = shape.normal(p);
+                    const float ao = shape.occlusion(p, n);
+                    const float lit = shape.shadow(p + n * .004f);
+                    const float nl = std::max(0.0f, dot(n, KeyLight));
+                    const V3 h = norm(KeyLight + ToCamera);
+                    const float nh = std::max(0.0f, dot(n, h)), nv = std::max(0.0f, dot(n, ToCamera));
+                    const float sky = .5f + .5f * n.y; // hemisphere ambient
+                    const float ambient = (.12f + .38f * sky) * ao;
+                    const float diffuse = ambient + nl * lit * .95f;
+                    const V3 r = n * (2 * nv) - ToCamera; // the view reflected off the surface
+                    const float reflected = environment(r) * (.35f + .65f * ao);
+                    // Schlick's approximation: reflections strengthen at grazing angles.
+                    const float schlick = std::pow(1 - nv, 5.0f);
+                    if (m == Jewel) {
+                        // Light seen through the stone: the view bent into it by the
+                        // facets picks up the room, so each facet glows differently.
+                        const float eta = 1 / 1.6f, cosi = nv;
+                        const float k = 1 - eta * eta * (1 - cosi * cosi);
+                        const V3 inward = norm(ToCamera * -eta + n * (eta * cosi - std::sqrt(std::max(0.0f, k))));
+                        const V3 bounced = inward * -1; // out the back and up again, roughly
+                        t.cap += diffuse * .5f + std::min(environment({bounced.x, std::abs(bounced.y), bounced.z}), 1.2f) * .38f;
+                        // The surface reflection stays a sparkle, capped, so the flat
+                        // table cannot wash the colour out to a pastel.
+                        t.spec += std::min(reflected, 2.0f) * (.02f + .55f * schlick);
+                    } else if (m == Table) {
+                        const float w = diffuse * .8f + .16f; // a little glow of its own
+                        for (float &c : t.rest)
+                            c += w;
+                        t.spec += reflected * (.04f + .5f * schlick);
+                    } else {
+                        // Gunmetal: mostly reflection, tinted cool, with little diffuse.
+                        const float tint[3] = {.50f, .53f, .60f};
+                        for (int c = 0; c < 3; ++c)
+                            t.rest[c] += tint[c] * reflected * .32f + .03f * diffuse;
+                        t.spec += std::pow(nh, 30.0f) * .12f * lit;
+                    }
+                }
+            if (hits) {
+                t.cap /= hits, t.spec /= hits;
+                for (float &c : t.rest)
+                    c /= hits;
+            }
+            t.cover = float(hits) / (Super * Super);
+            t.shadow = misses ? shadowSum / misses : 0;
+            out[size_t(py) * SpriteW + px] = t;
+        }
+    return out;
+}
+// Rendered once, one style per thread; a render device reset only uploads them
+// again. start() kicks this off in the background at launch, since no menu
+// shows a gem; the first gem drawn waits for it if it is somehow not done.
+std::array<std::vector<Texel>, GemStyles> &renders() {
+    static std::array<std::vector<Texel>, GemStyles> cache;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        std::array<std::thread, GemStyles> workers;
+        for (int style = 0; style < GemStyles; ++style)
+            workers[size_t(style)] = std::thread([style] {
+                cache[size_t(style)] = render(style == GemStar || style == GemStarHopo, style == GemHopo || style == GemStarHopo);
+            });
+        for (auto &w : workers)
+            w.join();
+    });
+    return cache;
+}
+void start() {
+    static std::future<void> job = std::async(std::launch::async, [] { renders(); });
+}
+float toLinear(Uint8 c) { return std::pow(c / 255.0f, 2.2f); }
+Uint8 toSrgb(float c) { return u8(std::pow(std::clamp(c, 0.0f, 1.0f), 1 / 2.2f) * 255); }
+SDL_Texture *texture(SDL_Color lane, GemStyle style) {
+    const auto &texels = renders()[size_t(style)];
+    const float lin[3] = {toLinear(lane.r), toLinear(lane.g), toLinear(lane.b)};
+    return upload(paint(SpriteW, SpriteH,
+                        [&](int x, int y) {
+                            const Texel &t = texels[size_t(y) * SpriteW + x];
+                            const float alphaOut = t.cover + (1 - t.cover) * t.shadow;
+                            if (alphaOut <= 0)
+                                return SDL_Color{0, 0, 0, 0};
+                            // Straight alpha: covered samples carry the gem colour,
+                            // uncovered ones only darken (the shadow is black).
+                            const float k = t.cover / alphaOut;
+                            SDL_Color c;
+                            c.r = toSrgb((lin[0] * t.cap + t.rest[0] + t.spec) * k);
+                            c.g = toSrgb((lin[1] * t.cap + t.rest[1] + t.spec) * k);
+                            c.b = toSrgb((lin[2] * t.cap + t.rest[2] + t.spec) * k);
+                            c.a = u8(alphaOut * 255);
+                            return c;
+                        }),
+                  SDL_BLENDMODE_BLEND);
+}
+} // namespace gem3d
 SDL_Texture *bakeTarget(const std::function<void()> &draw) {
     SDL_Texture *t = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, SpriteW, SpriteH);
     if (!t)
@@ -336,7 +578,8 @@ void destroyAll() {
         SDL_DestroyTexture(f.haloTexture);
         f.alphaTexture = f.haloTexture = nullptr;
     }
-    for (auto **t : {&glowTex, &wallTex, &vignetteTex, &scanTex, &tapeTex, &metalTex, &gripTex, &grainTex}) {
+    for (auto **t : {&glowTex, &wallTex, &vignetteTex, &scanTex, &tapeTex, &metalTex, &gripTex, &grainTex, &ringTex,
+                     &sparkTex, &flareTex}) {
         SDL_DestroyTexture(*t);
         *t = nullptr;
     }
@@ -422,33 +665,64 @@ void createAll() {
                                return SDL_Color{u8(v), u8(v), u8(v + 2), 255};
                            }),
                      SDL_BLENDMODE_BLEND);
+    // Flames: a tapering tongue whose edge is torn by noise that scrolls up
+    // through the frames. The noise tiles vertically over the whole cycle, so
+    // the last frame runs straight back into the first.
     for (int set = 0; set < 2; ++set)
         for (int frame = 0; frame < FlameFrames; ++frame) {
-            const float seed = frame * 1.7f;
+            const float scroll = frame * 6.0f / FlameFrames;
             flameTex[set][frame] = upload(
                 paint(64, 128,
                       [&](int px, int py) {
-                          float u = (px + .5f) / 64, v = (py + .5f) / 128; // v = 0 at the tip
-                          float body = .47f * std::pow(v, .55f);
-                          float sway = (std::sin(v * 6 + seed) * .08f + std::sin(v * 15 + seed * 2.3f) * .04f) * (1 - v);
-                          float tongues = 1 + .35f * (1 - v) * std::sin(u * 18 + seed * 4 + v * 5);
-                          float d = std::abs(u - .5f - sway) / std::max(body * tongues, .001f);
-                          float heat = std::pow(std::clamp(1 - d, 0.0f, 1.0f), .9f);
-                          heat *= .85f + .15f * std::sin(u * 23 + v * 31 + seed * 3);
-                          heat *= std::clamp((1 - v) * 7, 0.0f, 1.0f) * std::clamp(v * 1.3f, 0.0f, 1.0f);
-                          heat = std::clamp(heat * (.6f + .6f * v), 0.0f, 1.0f);
-                          float hot = std::min(1.0f, heat * 2.2f), mid = std::clamp(heat * 1.9f - .3f, 0.0f, 1.0f),
-                                core = std::clamp(heat * 2.4f - 1.4f, 0.0f, 1.0f);
-                          float r = hot, g = mid, b = core;
-                          if (set == 1) // star power burns blue-white
-                              r = core, g = std::max(mid * .9f, core), b = hot;
-                          return SDL_Color{u8(r * 255), u8(g * 255), u8(b * 255), u8(std::min(1.0f, heat * 1.8f) * 255)};
+                          const float u = (px + .5f) / 64, v = (py + .5f) / 128; // v = 0 at the tip
+                          const float n = fbm(u * 3, v * 3 + scroll, 6, 71, 4);
+                          const float lick = fbm(u * 6 + 11, v * 6 + scroll * 2, 12, 17, 3);
+                          const float body = .5f * std::pow(v, .8f);
+                          const float bend = (n - .5f) * .3f * (1.1f - v);
+                          const float d = std::abs(u - .5f - bend) / std::max(body, .001f);
+                          float heat = (1 - d * d) * (.7f + .6f * lick);
+                          heat -= (1 - v) * .22f;                         // thins out towards the tip
+                          heat *= std::clamp((1 - v) * 9, 0.0f, 1.0f);    // soft base
+                          heat = std::clamp(heat, 0.0f, 1.0f);
+                          // Classic ramp: deep red edge, orange, yellow, white-hot core.
+                          static const SDL_Color fireRamp[] = {{120, 12, 0, 255}, {255, 96, 6, 255}, {255, 196, 46, 255},
+                                                               {255, 250, 226, 255}};
+                          static const SDL_Color powerRamp[] = {{10, 30, 150, 255}, {40, 130, 255, 255}, {150, 220, 255, 255},
+                                                                {240, 252, 255, 255}};
+                          const SDL_Color *ramp = set ? powerRamp : fireRamp;
+                          const float k = std::min(heat * 2.7f, 2.999f);
+                          const SDL_Color c = mix(ramp[int(k)], ramp[int(k) + 1], k - int(k));
+                          return SDL_Color{c.r, c.g, c.b, u8(std::min(1.0f, heat * 2.0f) * 255)};
                       }),
                 SDL_BLENDMODE_ADD);
         }
-    for (size_t i = 0; i < gemTex.size(); ++i)
-        for (int style = 0; style < GemStyles; ++style)
-            gemTex[i][style] = bakeTarget([&] { bakeGem(i == PowerColor ? ink::power : lanes[i], GemStyle(style)); });
+    // A soft annulus for shockwaves and the fret buttons' hit flash.
+    ringTex = upload(paint(128, 128,
+                           [](int x, int y) {
+                               const float d = std::hypot((x + .5f) / 64 - 1, (y + .5f) / 64 - 1);
+                               return SDL_Color{255, 255, 255, u8(std::exp(-std::pow((d - .78f) / .09f, 2.0f)) * 255)};
+                           }),
+                     SDL_BLENDMODE_ADD);
+    // A spark streak, head at the right, for blitting along its velocity.
+    sparkTex = upload(paint(64, 16,
+                            [](int x, int y) {
+                                const float along = (x + .5f) / 64, across = (y + .5f - 8) / 3.2f;
+                                const float head = std::exp(-std::pow((along - .88f) / .08f, 2.0f));
+                                const float a = (std::pow(along, 1.6f) * .7f + head) * std::exp(-across * across);
+                                return SDL_Color{255, 255, 255, u8(std::min(1.0f, a) * 255)};
+                            }),
+                      SDL_BLENDMODE_ADD);
+    // A four-point star glint for perfect hits.
+    flareTex = upload(paint(128, 128,
+                            [](int x, int y) {
+                                const float dx = std::abs((x + .5f) / 64 - 1), dy = std::abs((y + .5f) / 64 - 1);
+                                const float rays = std::exp(-dx * 26) * std::exp(-dy * 2.6f) + std::exp(-dy * 26) * std::exp(-dx * 2.6f);
+                                const float core = std::exp(-std::hypot(dx, dy) * 7);
+                                return SDL_Color{255, 255, 255, u8(std::min(1.0f, rays + core) * 255)};
+                            }),
+                      SDL_BLENDMODE_ADD);
+    // Gem textures are uploaded on first use (see gem()); only start rendering.
+    gem3d::start();
     for (size_t i = 0; i < receptorTex.size(); ++i)
         for (int pressed = 0; pressed < 2; ++pressed)
             receptorTex[i][pressed] = bakeTarget([&] { bakeReceptor(lanes[i], pressed); });
@@ -547,9 +821,13 @@ void text(float x, float y, const std::string &raw, const Style &st) {
     const float lineH = f.line * scale, baseline = f.ascent * scale;
     const float angle = st.angle * Tau / 360;
 
-    auto pass = [&](SDL_Texture *tex, bool halo, float ox, float oy, bool gradient, SDL_Color flat) {
-        std::vector<SDL_Vertex> v;
-        std::vector<int> idx;
+    // Every pass is appended to one reused buffer and drawn in a single call per
+    // texture. A stencil string with an outline used to be fourteen separate
+    // draws; now it is two (halo, then outline and fill together, in order).
+    static std::vector<SDL_Vertex> v;
+    static std::vector<int> idx;
+    v.clear(), idx.clear();
+    auto pass = [&](bool halo, float ox, float oy, bool gradient, SDL_Color flat) {
         float pen = startX;
         uint32_t i = 0;
         for (unsigned char ch : s) {
@@ -584,18 +862,21 @@ void text(float x, float y, const std::string &raw, const Style &st) {
             pen += advance;
             ++i;
         }
-        geometry(tex, v, idx);
     };
-    if (st.glow.a)
-        pass(f.haloTexture, true, 0, 0, false, st.glow);
+    if (st.glow.a) {
+        pass(true, 0, 0, false, st.glow);
+        geometry(f.haloTexture, v, idx);
+        v.clear(), idx.clear();
+    }
     if (st.outline.a && st.outlineWidth > 0) {
         const int steps = st.outlineWidth > 2.5f ? 12 : 8;
         for (int k = 0; k < steps; ++k) {
             float a = k * Tau / steps;
-            pass(f.alphaTexture, false, std::cos(a) * st.outlineWidth, std::sin(a) * st.outlineWidth, false, st.outline);
+            pass(false, std::cos(a) * st.outlineWidth, std::sin(a) * st.outlineWidth, false, st.outline);
         }
     }
-    pass(f.alphaTexture, false, 0, 0, true, {});
+    pass(false, 0, 0, true, {});
+    geometry(f.alphaTexture, v, idx);
 }
 
 // ---------------------------------------------------------------- set pieces
@@ -692,7 +973,7 @@ void burnedCd(float cx, float cy, float r, double time) {
     disc(cx, cy, r * .2f, r * .2f, {120, 122, 134, 255}, {176, 178, 190, 255}, 40);
     disc(cx, cy, r * .085f, r * .085f, {8, 8, 10, 255}, {16, 16, 20, 255}, 32);
 }
-SDL_Texture *loadArtwork(const fs::path &folder) {
+Image decodeArtwork(const fs::path &folder) {
     // Clone Hero folders keep cover art next to the chart under a handful of names.
     for (const char *name : {"album.png", "album.jpg", "album.jpeg", "cover.png", "cover.jpg", "cover.jpeg"}) {
         std::error_code ec;
@@ -711,18 +992,28 @@ SDL_Texture *loadArtwork(const fs::path &folder) {
         Uint8 *pixels = stbi_load_from_memory(data.data(), int(data.size()), &w, &h, &channels, 4);
         if (!pixels)
             continue;
-        SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(pixels, w, h, 32, w * 4, SDL_PIXELFORMAT_RGBA32);
-        SDL_Texture *t = surface ? SDL_CreateTextureFromSurface(renderer, surface) : nullptr;
-        SDL_FreeSurface(surface);
+        Image image;
+        image.w = w, image.h = h;
+        image.rgba.assign(pixels, pixels + size_t(w) * size_t(h) * 4);
         stbi_image_free(pixels);
-        if (t) {
-            SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
-            SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
-            return t;
-        }
+        return image;
     }
-    return nullptr;
+    return {};
 }
+SDL_Texture *uploadArtwork(const Image &image) {
+    if (image.rgba.empty())
+        return nullptr;
+    SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(const_cast<Uint8 *>(image.rgba.data()), image.w, image.h, 32,
+                                                              image.w * 4, SDL_PIXELFORMAT_RGBA32);
+    SDL_Texture *t = surface ? SDL_CreateTextureFromSurface(renderer, surface) : nullptr;
+    SDL_FreeSurface(surface);
+    if (t) {
+        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
+    }
+    return t;
+}
+SDL_Texture *loadArtwork(const fs::path &folder) { return uploadArtwork(decodeArtwork(folder)); }
 // Album art as a printed square, the way a cover sits in a CD case.
 void photo(SDL_Texture *art, float cx, float cy, float size, float angleDeg, float shade) {
     if (!art)
@@ -776,6 +1067,18 @@ void button(float x, float y, const std::string &glyph, const std::string &label
     l.face = Face::Body, l.size = 17, l.top = l.bottom = ink::dim;
     text(x + 34, y + 3, label, l);
 }
+void fretButton(float x, float y, size_t lane, const std::string &label) {
+    const SDL_Color c = lanes[std::min(lane, lanes.size() - 1)];
+    disc(x + 14, y + 15, 15, 15, {0, 0, 0, 160}, {0, 0, 0, 0}, 20);
+    disc(x + 13, y + 13, 14, 14, {210, 212, 222, 255}, {90, 92, 104, 255}, 20);
+    disc(x + 13, y + 13, 11, 11, mix(c, {255, 255, 255, 255}, .25f), mix(c, {0, 0, 0, 255}, .45f), 20);
+    disc(x + 11, y + 9, 5, 3, {255, 255, 255, 110}, {255, 255, 255, 0}, 12);
+    if (!label.empty()) {
+        Style l;
+        l.face = Face::Body, l.size = 17, l.top = l.bottom = ink::dim;
+        text(x + 34, y + 3, label, l);
+    }
+}
 void ledMeter(float x, float y, float w, float h, int segments, float fill, bool active, double time) {
     rect(x - 6, y - 6, w + 12, h + 12, {6, 6, 8, 230});
     rect(x - 6, y - 6, w + 12, 1, {120, 122, 134, 160});
@@ -824,16 +1127,32 @@ void rockMeter(float x, float y, float w, float h, float value, double time, boo
     rect(x, ny - 1.5f, w, 3, alpha(ink::chrome, .9f));
 }
 // ---------------------------------------------------------------- highway
-void gem(size_t color, GemStyle style, float x, float y, float w, Uint8 a) {
-    const float scale = w / (SpriteRx * 2);
-    blit(gemTex[color][style], x - SpriteCx * scale, y - SpriteCy * scale, SpriteW * scale, SpriteH * scale, {255, 255, 255, a});
+void prepareGems() {
+    for (size_t i = 0; i < gemTex.size(); ++i)
+        for (int style = 0; style < GemStyles; ++style)
+            if (!gemTex[i][style])
+                gemTex[i][style] = gem3d::texture(i == PowerColor ? ink::power : lanes[i], GemStyle(style));
 }
-void receptor(size_t lane, float x, float y, float w, bool pressed, bool power) {
+void gem(size_t color, GemStyle style, float x, float y, float w, Uint8 a, float squash) {
+    auto &tex = gemTex[color][style];
+    if (!tex)
+        tex = gem3d::texture(color == PowerColor ? ink::power : lanes[color], style);
+    const float scale = w / (SpriteRx * 2);
+    blit(gemTex[color][style], x - SpriteCx * scale, y - SpriteCy * scale * squash, SpriteW * scale,
+         SpriteH * scale * squash, {255, 255, 255, a});
+}
+void receptor(size_t lane, float x, float y, float w, bool pressed, bool power, float hitFlash) {
     const float scale = w / (SpriteRx * 2);
     SDL_Color c = power ? ink::power : lanes[lane];
     if (pressed)
         glow(x, y + 10, w * 1.9f, w * .75f, alpha(c, .8f)); // neon underglow
     blit(receptorTex[lane][pressed], x - SpriteCx * scale, y - SpriteCy * scale, SpriteW * scale, SpriteH * scale);
+    if (hitFlash > 0) {
+        // A hit, not just a press: the neon lining flares white-hot.
+        const float ring = w * (.95f + .25f * (1 - hitFlash));
+        blit(ringTex, x - ring / 2, y - ring * .215f, ring, ring * .43f, {255, 255, 255, u8(255 * hitFlash)});
+        glow(x, y, w * 1.7f, w * .7f, alpha(c, .9f * hitFlash));
+    }
 }
 void gripTape(const std::array<SDL_FPoint, 4> &p, float v0, float v1, SDL_Color tint) {
     geometry(gripTex,
@@ -843,37 +1162,63 @@ void gripTape(const std::array<SDL_FPoint, 4> &p, float v0, float v1, SDL_Color 
 void fire(const Fire &f, float strike, double time, bool power) {
     const auto &flames = flameTex[power ? 1 : 0];
     const SDL_Color laneGlow = power ? ink::power : lanes[size_t(f.lane)];
-    const Uint8 sparkG = power ? 240 : 200, sparkB = power ? 255 : 110;
-    const int frame = int(time * 24 + f.seed % 7) % FlameFrames;
+    const SDL_Color spark = power ? SDL_Color{190, 236, 255, 255} : SDL_Color{255, 196, 84, 255};
+    const int frame = int(time * 30 + f.seed % FlameFrames) % FlameFrames;
     if (f.sustain) {
-        float flicker = .85f + .15f * std::sin(float(time) * 41 + float(f.seed));
-        glow(f.x, strike, 150, 80, alpha(laneGlow, .6f));
-        blit(flames[frame], f.x - 40, strike - 46 * flicker - 55 * flicker, 80, 110 * flicker, {255, 255, 255, 210});
-        for (int i = 0; i < 3; ++i) {
-            double cycle = time * 2.6 + hash01(f.seed + i);
-            float life = float(cycle - std::floor(cycle));
-            float sx = f.x + (hash01(f.seed * 3 + i + uint32_t(cycle)) - .5f) * 50;
-            glow(sx, strike - 10 - life * 90, 9, 9, {255, sparkG, sparkB, u8(255 * (1 - life))});
+        const float flicker = .88f + .12f * std::sin(float(time) * 37 + float(f.seed));
+        glow(f.x, strike, 170, 90, alpha(laneGlow, .55f * flicker));
+        glow(f.x, strike, 64, 30, {255, 255, 255, 150});
+        const float h = 116 * flicker;
+        blit(flames[frame], f.x - 55, strike - h * .9f, 110, h, {255, 255, 255, 235});
+        blit(flames[(frame + 3) % FlameFrames], f.x - 38, strike - h * .8f, 76, h * .78f, {255, 255, 255, 170});
+        // Sparks streaming up off the held note.
+        for (int i = 0; i < 4; ++i) {
+            const double cycle = time * 1.9 + hash01(f.seed + uint32_t(i) * 7);
+            const float life = float(cycle - std::floor(cycle));
+            const uint32_t id = uint32_t(std::floor(cycle)) * 17 + uint32_t(i);
+            const float lean = (hash01(f.seed * 3 + id) - .5f) * 40;
+            const float sx = f.x + (hash01(f.seed * 5 + id) - .5f) * 50 + lean * life;
+            const float sy = strike - 10 - life * 150;
+            blitRotated(sparkTex, sx, sy, 24, 6, -90 + lean * .6f, alpha(spark, 1 - life));
         }
         return;
     }
-    const float t = float(f.age / .38);
+    const float t = float(f.age / .42);
     if (t >= 1)
         return;
     const float fade = 1 - t, rise = 1 - fade * fade * fade;
-    glow(f.x, strike, 120 + 90 * rise, 60 + 40 * rise, alpha(laneGlow, fade));
-    glow(f.x, strike, 70 * fade, 34 * fade, {255, 255, 255, u8(255 * fade)});
-    float h = 70 + 110 * rise, w = 130 - 30 * rise;
-    blit(flames[frame], f.x - w / 2, strike - h * .42f - h / 2, w, h, {255, 255, 255, u8(255 * fade)});
-    float h2 = 50 + 150 * rise;
-    blit(flames[(frame + 2) % FlameFrames], f.x - 35, strike - h2 * .45f - 10 * rise - h2 / 2, 70, h2, {255, 255, 255, u8(200 * fade)});
-    for (int i = 0; i < 10; ++i) {
-        float angle = -Tau / 4 + (hash01(f.seed + i * 13) - .5f) * 2.2f;
-        float speed = 160 + 260 * hash01(f.seed * 7 + i), age = float(f.age);
-        float sx = f.x + std::cos(angle) * speed * age;
-        float sy = strike + std::sin(angle) * speed * age + 520 * age * age;
-        float size = 10 + 10 * hash01(f.seed + i * 29);
-        glow(sx, sy, size, size, {255, sparkG, sparkB, u8(255 * fade)});
+    // Tighter hits burn bigger.
+    const float boost = f.tier == 3 ? 1.25f : f.tier == 2 ? 1.1f : 1;
+    // Shockwave rolling out across the board.
+    const float rw = (50 + 130 * rise) * boost;
+    blit(ringTex, f.x - rw / 2, strike - rw * .175f, rw, rw * .35f, alpha(laneGlow, fade * .9f));
+    glow(f.x, strike, 140 + 100 * rise, 70 + 40 * rise, alpha(laneGlow, fade * .9f));
+    glow(f.x, strike, 80 * fade, 40 * fade, {255, 255, 255, u8(255 * fade)});
+    const float h = (70 + 110 * rise) * boost, w = 150 - 30 * rise;
+    blit(flames[frame], f.x - w / 2, strike - h * .92f, w, h, {255, 255, 255, u8(255 * fade)});
+    const float h2 = (50 + 140 * rise) * boost;
+    blit(flames[(frame + 4) % FlameFrames], f.x - 45, strike - h2 * .95f - 8 * rise, 90, h2,
+         {255, 255, 255, u8(190 * fade)});
+    if (f.tier == 3) {
+        const float fs = 170 * (1 - t * .5f);
+        blitRotated(flareTex, f.x, strike - 6, fs, fs, float(f.seed % 30) + t * 25, {255, 250, 230, u8(255 * fade)});
+    }
+    // Sparks thrown up and falling back, drawn as streaks along their path.
+    const float age = float(f.age);
+    for (int i = 0; i < 12; ++i) {
+        const float angle = -Tau / 4 + (hash01(f.seed + uint32_t(i) * 13) - .5f) * 2.4f;
+        const float speed = 200 + 320 * hash01(f.seed * 7 + uint32_t(i));
+        const float vx = std::cos(angle) * speed, vy = std::sin(angle) * speed + 900 * age;
+        const float sx = f.x + std::cos(angle) * speed * age;
+        const float sy = strike + std::sin(angle) * speed * age + 450 * age * age;
+        const float len = 14 + std::hypot(vx, vy) * .045f;
+        blitRotated(sparkTex, sx, sy, len, 6, std::atan2(vy, vx) * 360 / Tau, alpha(spark, fade));
+    }
+    // A few slow embers drifting up after the burst.
+    for (int i = 0; i < 4; ++i) {
+        const float ex = f.x + (hash01(f.seed * 11 + uint32_t(i)) - .5f) * 70 + std::sin(age * 9 + float(i)) * 8;
+        const float ey = strike - 20 - age * 170 * (.6f + hash01(f.seed * 13 + uint32_t(i)));
+        glow(ex, ey, 8, 8, alpha(spark, fade));
     }
 }
 } // namespace fret::look

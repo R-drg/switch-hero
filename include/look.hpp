@@ -1,11 +1,13 @@
 #pragma once
 // Switch Hero's visual kit: a 2000s older-brother's-bedroom rock look built from
-// baked procedural textures (grip tape, duct tape, brushed metal, chrome gems,
-// fire) and pre-rasterised TTF fonts. Everything draws in 1280x720 logical units.
+// baked procedural textures (grip tape, duct tape, brushed metal, fire), jewel
+// gems ray-marched at start-up, and pre-rasterised TTF fonts. Everything draws
+// in 1280x720 logical units.
 #include "song.hpp"
 #include <SDL.h>
 #include <array>
 #include <string>
+#include <vector>
 
 namespace fret::look {
 constexpr int W = 1280, H = 720;
@@ -65,12 +67,21 @@ void grade(double time);
 void tape(float cx, float cy, float w, float h, float angleDeg, float shade = 1);
 void plate(float x, float y, float w, float h); // brushed metal panel with screws
 void burnedCd(float cx, float cy, float r, double time);
-// Album art, if the song folder ships any. Returns null when there is none.
+// Album art, if the song folder ships any. Decoding touches no SDL state, so
+// it can run on a loader thread; uploading must happen on the main thread.
+struct Image {
+    int w = 0, h = 0;
+    std::vector<Uint8> rgba;
+};
+Image decodeArtwork(const fs::path &folder);
+SDL_Texture *uploadArtwork(const Image &image); // null for an empty image
 SDL_Texture *loadArtwork(const fs::path &folder);
 void photo(SDL_Texture *art, float cx, float cy, float size, float angleDeg, float shade = 1);
 void sticker(float cx, float cy, float r, float angleDeg, SDL_Color fill, const std::string &label);
 void star(float cx, float cy, float r, float angleDeg, SDL_Color fill, SDL_Color edge);
 void button(float x, float y, const std::string &glyph, const std::string &label); // controller hint
+// The same hint as a fret-coloured button, for guitar controls.
+void fretButton(float x, float y, size_t lane, const std::string &label);
 void ledMeter(float x, float y, float w, float h, int segments, float fill, bool active, double time);
 // Rock meter: a vertical red/amber/green gauge with a chrome needle.
 void rockMeter(float x, float y, float w, float h, float value, double time, bool danger);
@@ -79,8 +90,14 @@ void rockMeter(float x, float y, float w, float h, float value, double time, boo
 enum GemStyle { GemNormal, GemHopo, GemStar, GemStarHopo, GemStyles };
 constexpr size_t PowerColor = 5;
 // Top face centre at (x, y) with face width w.
-void gem(size_t color, GemStyle style, float x, float y, float w, Uint8 alpha);
-void receptor(size_t lane, float x, float y, float w, bool pressed, bool power);
+// `squash` flattens it vertically: gems further up the highway are seen at a
+// shallower angle, so they are drawn a little flatter than the near ones.
+void gem(size_t color, GemStyle style, float x, float y, float w, Uint8 alpha, float squash = 1);
+// Uploads every gem texture now (waiting for the background render if needed),
+// so none is created mid-song. Call while a song or the calibration loads.
+void prepareGems();
+// `hitFlash` runs 1 to 0 just after a note is hit on this fret.
+void receptor(size_t lane, float x, float y, float w, bool pressed, bool power, float hitFlash = 0);
 void gripTape(const std::array<SDL_FPoint, 4> &corners, float v0, float v1, SDL_Color tint);
 struct Fire {
     float x;
@@ -88,6 +105,7 @@ struct Fire {
     double age; // seconds since the note was hit
     bool sustain;
     uint32_t seed;
+    int tier = 0; // hit timing, 1 good to 3 perfect; bigger bursts for tighter hits
 };
 void fire(const Fire &f, float strike, double time, bool power);
 } // namespace fret::look

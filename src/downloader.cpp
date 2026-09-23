@@ -10,7 +10,10 @@ namespace fret {
 namespace fs = std::filesystem;
 namespace {
 constexpr int perPage = 25;
-const char *const userAgent = "switch-hero/0.1 (homebrew rhythm game)";
+#ifndef SWITCH_HERO_VERSION
+#define SWITCH_HERO_VERSION "dev"
+#endif
+const char *const userAgent = "switch-hero/" SWITCH_HERO_VERSION " (homebrew rhythm game)";
 
 // Sockets are only brought up once the download screen is first opened, so
 // players who never use it pay nothing for them.
