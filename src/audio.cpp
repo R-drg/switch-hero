@@ -19,6 +19,15 @@
 #endif
 
 namespace fret {
+void Decoder::seek(double seconds) {
+    std::vector<float> scratch(4096 * size_t(std::max(1, channels)));
+    for (auto left = uint64_t(std::max(0.0, seconds) * rate); left > 0;) {
+        const size_t n = read(scratch.data(), size_t(std::min<uint64_t>(left, 4096)));
+        if (!n)
+            break;
+        left -= n;
+    }
+}
 #ifndef __SWITCH__
 class FileDecoder : public Decoder {
     SNDFILE *file = nullptr;
@@ -55,6 +64,10 @@ class FileDecoder : public Decoder {
                 return 0; // end of the stem
         }
         throw std::runtime_error("Audio decode error");
+    }
+    void seek(double seconds) override {
+        if (sf_seek(file, sf_count_t(std::max(0.0, seconds) * rate), SEEK_SET) < 0)
+            Decoder::seek(seconds);
     }
 };
 std::unique_ptr<Decoder> openDecoder(const fs::path &p) { return std::make_unique<FileDecoder>(p); }
@@ -106,6 +119,10 @@ class VorbisDecoder : public Decoder {
         }
         return got;
     }
+    void seek(double seconds) override {
+        if (ov_time_seek(&file, std::max(0.0, seconds)))
+            throw std::runtime_error("Vorbis seek failed");
+    }
 };
 class OpusDecoder : public Decoder {
     OggOpusFile *file = nullptr;
@@ -140,7 +157,31 @@ class OpusDecoder : public Decoder {
         }
         return got;
     }
+    void seek(double seconds) override {
+        if (op_pcm_seek(file, ogg_int64_t(std::max(0.0, seconds) * 48000)))
+            throw std::runtime_error("Opus seek failed");
+    }
 };
+// A Xing/Info/VBRI header in the first frame (after any ID3v2 tag) carries the
+// track length and a seek table, so the file need not be scanned end to end.
+static bool mp3HasSeekHeader(const fs::path &p) {
+    std::ifstream f(p, std::ios::binary);
+    unsigned char id3[10] = {};
+    f.read(reinterpret_cast<char *>(id3), 10);
+    std::streamoff start = 0;
+    if (f.gcount() == 10 && id3[0] == 'I' && id3[1] == 'D' && id3[2] == '3')
+        start = 10 +
+                ((std::streamoff(id3[6] & 0x7f) << 21) | (std::streamoff(id3[7] & 0x7f) << 14) |
+                 (std::streamoff(id3[8] & 0x7f) << 7) | std::streamoff(id3[9] & 0x7f)) +
+                ((id3[5] & 0x10) ? 10 : 0);
+    f.clear();
+    f.seekg(start);
+    std::string head(4096, '\0');
+    f.read(head.data(), std::streamsize(head.size()));
+    head.resize(size_t(std::max<std::streamsize>(0, f.gcount())));
+    return head.find("Xing") != std::string::npos || head.find("Info") != std::string::npos ||
+           head.find("VBRI") != std::string::npos;
+}
 class Mp3Decoder : public Decoder {
     mpg123_handle *file = nullptr;
 
@@ -149,25 +190,43 @@ class Mp3Decoder : public Decoder {
         static const int init = mpg123_init();
         if (init != MPG123_OK)
             throw std::runtime_error("MP3 init failed");
+        const bool seekHeader = mp3HasSeekHeader(p);
         int e = 0;
         file = mpg123_new(nullptr, &e);
         if (!file)
             throw std::runtime_error("MP3 allocation failed");
         try {
+            // With a seek header, fuzzy seeking uses its table instead of an
+            // exact frame index built by reading the whole file.
+            mpg123_param(file, MPG123_ADD_FLAGS, MPG123_QUIET | (seekHeader ? MPG123_FUZZY : 0), 0);
+            // Float output has to be the only format allowed *before* opening.
+            // Narrowing it after the first getformat left libmpg123 emitting
+            // 16-bit samples, which were then read as floats: half-length noise.
+            mpg123_format_none(file);
+            const long *rates = nullptr;
+            size_t rateCount = 0;
+            mpg123_rates(&rates, &rateCount);
+            for (size_t i = 0; i < rateCount; ++i)
+                mpg123_format(file, rates[i], MPG123_MONO | MPG123_STEREO, MPG123_ENC_FLOAT_32);
             if (mpg123_open(file, p.string().c_str()) != MPG123_OK)
                 throw std::runtime_error("Cannot open MP3");
             long r;
             int encoding;
             if (mpg123_getformat(file, &r, &channels, &encoding) != MPG123_OK)
                 throw std::runtime_error("Cannot read MP3 format");
+            if (encoding != MPG123_ENC_FLOAT_32)
+                throw std::runtime_error("MP3 float output unavailable");
             rate = int(r);
             if (channels < 1 || channels > 2)
                 throw std::runtime_error("Only mono/stereo MP3 supported");
-            mpg123_format_none(file);
-            if (mpg123_format(file, r, channels, MPG123_ENC_FLOAT_32) != MPG123_OK)
-                throw std::runtime_error("MP3 float output unavailable");
-            mpg123_scan(file);
-            duration = double(mpg123_length(file)) / rate;
+            // Without a header the length estimate is wrong for VBR files and
+            // seeks land in the wrong place, so those still get scanned once.
+            off_t length = seekHeader ? mpg123_length(file) : 0;
+            if (length <= 0) {
+                mpg123_scan(file);
+                length = mpg123_length(file);
+            }
+            duration = double(std::max<off_t>(0, length)) / rate;
         } catch (...) {
             mpg123_delete(file);
             file = nullptr;
@@ -194,10 +253,15 @@ class Mp3Decoder : public Decoder {
             throw std::runtime_error("MP3 decode failed");
         return got / (channels * sizeof(float));
     }
+    void seek(double seconds) override {
+        if (mpg123_seek(file, off_t(std::max(0.0, seconds) * rate), SEEK_SET) < 0)
+            throw std::runtime_error("MP3 seek failed");
+    }
 };
 class WavDecoder : public Decoder {
     std::ifstream f;
-    uint64_t remaining = 0;
+    uint64_t remaining = 0, dataSize = 0;
+    std::streamoff dataStart = 0;
     int bits = 0, type = 0;
     std::vector<uint8_t> bytes;
     uint32_t le(int n) {
@@ -234,7 +298,8 @@ class WavDecoder : public Decoder {
                 bits = le(2);
                 f.seekg(n - 16 + (n & 1), std::ios::cur);
             } else if (std::string(id, 4) == "data") {
-                remaining = n;
+                remaining = dataSize = n;
+                dataStart = f.tellg();
                 break;
             } else
                 f.seekg(n + (n & 1), std::ios::cur);
@@ -262,6 +327,13 @@ class WavDecoder : public Decoder {
         }
         remaining -= bytes.size();
         return count;
+    }
+    void seek(double seconds) override {
+        const uint64_t frameBytes = uint64_t(channels) * (bits / 8);
+        const uint64_t offset = std::min(uint64_t(std::max(0.0, seconds) * rate), dataSize / frameBytes) * frameBytes;
+        f.clear();
+        f.seekg(dataStart + std::streamoff(offset));
+        remaining = dataSize - offset;
     }
 };
 std::unique_ptr<Decoder> openDecoder(const fs::path &p) {
@@ -813,8 +885,8 @@ void Audio::fail(const std::string &message) {
     failed = true;
 }
 void Audio::playSfx(Sfx sound, float gain) {
-    if (engine)
-        engine->play(sound, gain);
+    if (engine && sfxVolume > 0)
+        engine->play(sound, gain * sfxVolume);
 }
 void Audio::stop() {
     if (engine) {
@@ -828,6 +900,26 @@ void Audio::stop() {
     paused = true;
 }
 void Audio::load(const Song &song) {
+    songGain = 1;
+    loadStreams(song, std::max(2.0, 2.0 - song.offset), 0, true);
+}
+struct Audio::Prepared {
+    std::vector<std::unique_ptr<Stream>> streams;
+    double duration = 0;
+};
+std::shared_ptr<Audio::Prepared> Audio::prepare(std::vector<fs::path> stems, double songDuration, double startSeconds) {
+    auto p = std::make_shared<Prepared>();
+    p->duration = songDuration + 2;
+    for (auto &path : stems) {
+        auto stream = std::make_unique<Stream>(path);
+        if (startSeconds > 0)
+            stream->decoder->seek(startSeconds);
+        p->duration = std::max(p->duration, stream->decoder->duration);
+        p->streams.push_back(std::move(stream));
+    }
+    return p;
+}
+void Audio::playPrepared(std::shared_ptr<Prepared> prepared) {
     start();
     stop();
     failed = false;
@@ -835,12 +927,40 @@ void Audio::load(const Song &song) {
         std::lock_guard<std::mutex> lock(errorMutex);
         failure.clear();
     }
-    leadIn = std::max(2.0, 2.0 - song.offset);
+    leadIn = 0;
+    totalDuration = prepared->duration;
+    guitarStem = false, duckGuitar = false, silent = false;
+    for (auto &stream : prepared->streams)
+        stream->gain = songGain * musicVolume; // start at the level it will ramp to
+    {
+        std::lock_guard<std::mutex> lock(streamMutex);
+        streams = std::move(prepared->streams);
+        generated = 0;
+    }
+    engine->songActive = true;
+    pause(false);
+}
+void Audio::preview(const Song &song, double startSeconds) {
+    playPrepared(prepare(song.audio, song.duration + song.offset, std::max(0.0, startSeconds)));
+}
+void Audio::loadStreams(const Song &song, double lead, double startSeconds, bool prime) {
+    start();
+    stop();
+    failed = false;
+    {
+        std::lock_guard<std::mutex> lock(errorMutex);
+        failure.clear();
+    }
+    leadIn = lead;
     totalDuration = song.duration + song.offset + 2;
     std::vector<std::unique_ptr<Stream>> loaded;
     bool anyGuitar = false;
     for (auto &p : song.audio) {
         auto stream = std::make_unique<Stream>(p);
+        if (startSeconds > 0)
+            stream->decoder->seek(startSeconds);
+        stream->gain = songGain * musicVolume; // start at the level it will ramp to
+
         totalDuration = std::max(totalDuration, stream->decoder->duration);
         // Clone Hero stems are named by instrument, so the lead guitar can be
         // muted on its own when the rock meter bottoms out.
@@ -859,7 +979,7 @@ void Audio::load(const Song &song) {
     }
     engine->songActive = true;
     // Prime before playback so slow storage cannot consume the initial silence early.
-    for (int i = 0; i < 1000; ++i) {
+    for (int i = 0; prime && i < 1000; ++i) {
         {
             std::lock_guard<std::mutex> lock(engine->mutex);
             if (engine->songSubmitted >= 4096)
@@ -907,6 +1027,7 @@ void Audio::loadClicks(double bpm) {
     }
     leadIn = 1;
     totalDuration = 1e9;
+    songGain = 1;
     guitarStem = false;
     duckGuitar = false;
     silent = false;
@@ -940,9 +1061,10 @@ bool Audio::renderSong(float *out, size_t frames) {
         return false;
     const auto leadFrames = uint64_t(std::llround(leadIn * 48000));
     const size_t silence = generated < leadFrames ? size_t(std::min<uint64_t>(frames, leadFrames - generated)) : 0;
+    const float level = songGain * musicVolume;
     if (silence < frames)
         for (auto &stream : streams)
-            stream->mix(out + silence * 2, frames - silence, silent || (stream->guitar && duckGuitar) ? 0.0f : 1.0f);
+            stream->mix(out + silence * 2, frames - silence, silent || (stream->guitar && duckGuitar) ? 0.0f : level);
     // Preserve stem balance; clamp only overshoots of full-scale mixes.
     for (size_t i = 0; i < frames * 2; ++i)
         out[i] = std::isfinite(out[i]) ? std::clamp(out[i], -1.0f, 1.0f) : 0.0f;

@@ -13,6 +13,9 @@ class Decoder {
     double duration = 0;
     virtual ~Decoder() = default;
     virtual size_t read(float *samples, size_t frames) = 0;
+    // Jumps to `seconds` from the start. Formats without a native seek decode
+    // and discard up to it.
+    virtual void seek(double seconds);
 };
 std::unique_ptr<Decoder> openDecoder(const fs::path &path);
 
@@ -42,11 +45,16 @@ class Audio {
     std::vector<std::unique_ptr<Stream>> streams;
     mutable std::mutex streamMutex, errorMutex;
     std::atomic<bool> paused{true}, failed{false}, duckGuitar{false}, silent{false};
+    // songGain fades the song channel (previews); the volumes are the player's.
+    std::atomic<float> songGain{1}, musicVolume{1}, sfxVolume{1};
     bool guitarStem = false;
     std::string failure;
     double leadIn = 2.0, totalDuration = 0;
     uint64_t generated = 0;
     void fail(const std::string &message);
+    // `prime` waits for the mixer to buffer the start, which song timing needs
+    // and a preview does not.
+    void loadStreams(const Song &song, double leadIn, double startSeconds, bool prime);
     friend struct Engine;
 
   public:
@@ -58,6 +66,18 @@ class Audio {
     // effects work from here on, with or without a song loaded.
     void start();
     void load(const Song &song);
+    // Plays the song from `startSeconds` with no lead-in, for the song list's
+    // preview. Nothing is judged against it, so it has no count-in.
+    void preview(const Song &song, double startSeconds);
+    // The same, split so the slow part can leave the main thread: prepare()
+    // opens and seeks the stems and touches no mixer state, so it runs on any
+    // thread; playPrepared() swaps them in.
+    struct Prepared;
+    static std::shared_ptr<Prepared> prepare(std::vector<fs::path> stems, double songDuration, double startSeconds);
+    void playPrepared(std::shared_ptr<Prepared> prepared);
+    void setSongGain(float gain) { songGain = gain; }
+    // Both run 0 to 1.
+    void setVolumes(float music, float sfx) { musicVolume = music, sfxVolume = sfx; }
     // Loads a click track on the song channel instead of a song, for offset
     // calibration: the clicks then carry exactly the latency the music does.
     // Beat k lands at position() == k * 60 / bpm.

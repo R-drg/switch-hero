@@ -31,7 +31,15 @@ int main(int argc, char **argv) {
             }
             if (total < size_t(d->rate * .9) || total > size_t(d->rate * 1.1) || energy < 1)
                 throw std::runtime_error("Audio duration or waveform mismatch");
-            std::cout << p.extension() << ": " << total << " frames at " << d->rate << " Hz\n";
+            // Seeking halfway leaves half the fixture to decode.
+            auto seeked = openDecoder(p);
+            seeked->seek(.5);
+            size_t rest = 0;
+            for (size_t n; (n = seeked->read(buf.data(), buf.size() / seeked->channels));)
+                rest += n;
+            if (std::abs(double(rest) - total / 2.0) > seeked->rate * .05)
+                throw std::runtime_error("Seek landed in the wrong place: " + p.string());
+            std::cout << p.extension() << ": " << total << " frames at " << d->rate << " Hz, seek ok\n";
             ++tested;
         }
         if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER))
@@ -56,6 +64,13 @@ int main(int argc, char **argv) {
             a.load(song);
             if (std::abs(a.position() + 2) > .001)
                 throw std::runtime_error("Restart does not reset clock");
+            // A preview has no count-in and starts playing straight away.
+            a.preview(song, .5);
+            if (std::abs(a.position()) > .05)
+                throw std::runtime_error("Preview should start with no lead-in");
+            SDL_Delay(120);
+            if (a.position() <= .05)
+                throw std::runtime_error("Preview clock did not advance");
             a.stop();
         }
         SDL_Quit();
