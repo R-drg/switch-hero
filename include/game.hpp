@@ -365,6 +365,58 @@ struct Session {
         lastTime = time;
     }
     bool complete(double time) const { return next == state.size() && time > song->duration + 1; }
+    double accuracy() const { return state.empty() ? 1 : double(hits) / double(state.size()); }
+};
+
+// Split-screen multiplayer: two to four players on one console, each with an
+// independent Session over the same song. Nothing is shared but the clock and
+// the audio, so a player's combo, star power and rock meter are entirely their
+// own and there is no cross-talk to reason about.
+struct MultiSession {
+    static constexpr size_t maxPlayers = 4;
+    std::vector<Session> players;
+    // Everyone plays to the end. Dropping a failed player would leave a dead
+    // quarter of the screen for the rest of the song while the others play on,
+    // so in multiplayer the rock meter is a score signal, not an eject button.
+    // Each Session still tracks its own meter; noFail only stops it ending them.
+    MultiSession(const Song &song, const std::vector<const Track *> &tracks, int leniency) {
+        players.reserve(tracks.size());
+        for (const Track *t : tracks) {
+            players.emplace_back(song, *t);
+            auto &p = players.back();
+            p.noFail = true;
+            p.window = Session::windowFor(t->difficulty, leniency);
+        }
+    }
+    size_t size() const { return players.size(); }
+    Session &operator[](size_t i) { return players[i]; }
+    const Session &operator[](size_t i) const { return players[i]; }
+    // The song is over for everyone at once: it is one shared audio stream.
+    bool complete(double time) const {
+        return !players.empty() && players.front().complete(time);
+    }
+    struct Standing {
+        size_t player = 0;
+        int rank = 1; // 1-based; players tied on score share a rank
+        double score = 0, accuracy = 1;
+        int maxCombo = 0, misses = 0;
+        bool fullCombo = false;
+    };
+    // Final order, best score first. Ties share a rank and the next rank skips,
+    // so two players tied for first are both 1st and the third is 3rd.
+    std::vector<Standing> standings() const {
+        std::vector<Standing> out;
+        out.reserve(players.size());
+        for (size_t i = 0; i < players.size(); ++i) {
+            const auto &p = players[i];
+            out.push_back({i, 1, p.score, p.accuracy(), p.maxCombo, p.misses, p.misses == 0});
+        }
+        std::stable_sort(out.begin(), out.end(),
+                         [](const Standing &a, const Standing &b) { return a.score > b.score; });
+        for (size_t i = 0; i < out.size(); ++i)
+            out[i].rank = i > 0 && out[i].score == out[i - 1].score ? out[i - 1].rank : int(i) + 1;
+        return out;
+    }
 };
 
 // How a run went section by section, for the results screen: notes hit out

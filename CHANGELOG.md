@@ -1,6 +1,74 @@
 # Changelog
-
 ## Unreleased
+
+### Split-screen multiplayer
+- Two to four players on one console, each on their own board, all playing the
+  same song. Two players get side-by-side halves; three or four get quadrants,
+  with the fourth left empty when three are playing.
+- **Docked only.** The Multiplayer entry refuses to open in handheld mode and
+  says why before it refuses, and undocking mid-song pauses rather than playing
+  on for three players who can no longer see a board.
+- A lobby where every seat is driven by its own controller at once: A joins, B
+  leaves, left/right picks the instrument, up/down the difficulty, Plus starts.
+  Difficulty stepping skips tiers the chart does not carry, so a seat can never
+  sit on an empty one. Each player gets the hit window their own difficulty
+  earns, so an expert and a beginner can share a song.
+- Songs count in 3-2-1 before the first note and again after a pause, with the
+  lead-in drumstick clicks, rather than dropping four players straight into
+  notes.
+- Pause is a menu, as in single player: resume, restart, quit to song list.
+  There is no change-difficulty row, since up to four difficulties are in play
+  and no one of them to change.
+- Every board calls its own timing - GOOD, GREAT, PERFECT with the early/late
+  marker - and shouts its own streak milestones and star power. A streak
+  belongs to whoever earned it and says nothing to the other three. The
+  dropped-note screech keeps one shared rate limit so four players fumbling at
+  once cannot machine-gun it.
+- The song is named once for the room: title, artist, elapsed time and a
+  progress bar across the top of the screen rather than repeated on every
+  board.
+- Results are a comparative table: rank, score, accuracy, best streak and full
+  combo per player, with ties sharing a rank. A replays the same line-up.
+- Multiplayer forces no-fail. Dropping a failed player would leave a dead
+  quarter of the screen for the rest of the song; the rock meter still moves
+  and still reads red, it just stops being an eject button.
+- The guitar stem is never ducked in multiplayer. It is one shared audio
+  stream, so muting it because one of four players is in the red would punish
+  the other three for that player's mistake.
+- Multiplayer never writes a high score. `scores.cfg` is keyed by song, part
+  and difficulty with no room for a player, and four runs would fight over one
+  record, so the standings are shown instead. The file format is unchanged.
+
+### Input
+- The Switch input thread samples four pads instead of one, each with its own
+  press timestamp on the `now()` clock. A single shared stamp would hand one
+  player's press time to another player's judgement. Player one keeps the
+  default pad - handheld as well as No1 - and the Wii guitar, so single player
+  is unchanged.
+- Audio and video offsets stay shared across seats on purpose: they describe
+  the console and the television, not a controller, so player one's calibration
+  is the right answer for all four.
+- The desktop backend opens up to four controllers, so split screen can be
+  developed and played without a console.
+
+### Rendering
+- `look::setViewport` places a pane by composing a scale and viewport on top of
+  the logical-size letterbox, re-derived on every call so it survives the
+  console changing output resolution on its way into the dock. Draw code still
+  works in 1280x720 units and needs to know nothing about the split.
+- `highway()` now takes its board geometry. Single player keeps the proportions
+  it had; split screen passes a wider, taller board, because the single-player
+  margins that make room for a full-width HUD left the board a narrow ribbon in
+  a half or quarter pane. The fret buttons scale with it.
+
+### Performance
+- **Options -> Audio / video sync -> Film grain** turns off the grain loop in
+  `look::grade()` on its own. It is roughly fifteen tiled fullscreen blits per
+  frame and the cheapest third of the pass to lose, and split screen multiplies
+  everything else on screen, so it is the first thing to reach for if frames
+  drop.
+
+### Everything else
 
 - Customization: Options -> Customize, with a live preview that plays a short
   chart by itself as you change settings. The number beside each option shows

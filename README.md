@@ -96,6 +96,53 @@ delete the old folder so the Homebrew Menu only lists Switch Hero.
   strum, and Wii guitar over Bluetooth.
 - **Its own look.** A 2000s bedroom full of burned CD-Rs, duct tape and grip
   tape, with every texture generated in code (see [Look](#look)).
+- **Split-screen multiplayer**, two to four players, docked only (see
+  [Multiplayer](#multiplayer)).
+
+## Multiplayer
+
+Two to four players share one console and one song, each on their own board.
+Pick **Multiplayer** on the title menu, choose a song, and the lobby opens.
+
+**Docked only.** Four boards on the handheld screen would be unreadable, and
+players two to four have no way to hold a Joy-Con that is attached to the
+console. The menu entry says so before it refuses, and undocking during a song
+pauses it rather than playing on.
+
+In the lobby every seat is driven by its own controller, all at once:
+
+| Action | Button |
+| --- | --- |
+| Join / leave | A / B |
+| Instrument | Left / Right |
+| Difficulty | Up / Down |
+| Start | Plus |
+
+Each player picks their own instrument and difficulty, and gets the hit window
+that difficulty earns, so an expert and a beginner can share a song. Difficulty
+stepping skips tiers the chart does not carry.
+
+The screen splits side by side for two players and into quadrants for three or
+four; with three, the fourth quadrant is left empty. Each board keeps its own
+score, streak, multiplier, star power and rock meter — nothing is shared but the
+clock and the audio.
+
+Three rules differ from single player, all for the same reason: four people are
+sharing one screen and one speaker.
+
+- **No-fail is forced.** Dropping a failed player would leave a dead quarter of
+  the screen for the rest of the song. The rock meter still moves and still
+  reads red; it just stops ejecting anyone.
+- **The guitar stem is never ducked.** There is one shared audio stream, so
+  muting it because one player is in the red would punish the other three.
+- **No high scores are written.** `scores.cfg` is keyed by song, part and
+  difficulty with no room for a player, so four runs would fight over one
+  record. The final standings are shown instead: rank, score, accuracy, best
+  streak and full combo, with ties sharing a rank.
+
+If frames drop with four boards on screen, turn off **Options -> Audio / video
+sync -> Film grain** first — it is the most expensive effect and the cheapest to
+lose.
 
 ## Controls
 

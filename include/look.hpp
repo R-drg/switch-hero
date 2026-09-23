@@ -36,6 +36,23 @@ void init(SDL_Renderer *r);
 void rebuild(); // after SDL_RENDER_DEVICE_RESET / SDL_RENDER_TARGETS_RESET
 void shutdown();
 
+// Split-screen. Between setViewport() and clearViewport() everything still
+// draws in the usual 1280x720 units; SDL scales and offsets it into that
+// player's share of the screen, so no draw code needs to know it is in a split.
+//
+// The share is fitted with its aspect kept, so a two-player split is a pair of
+// tall 640x720 panes with the 16:9 frame letterboxed inside each. That costs
+// screen height, but it is the one layout where nothing is cropped away and
+// every player sees an identical board.
+//
+// Anything that must cover the whole screen - the wall behind, and grade()
+// above all - belongs outside the pair, or it is drawn once per player and the
+// seams show.
+void setViewport(size_t player, size_t players);
+void clearViewport();
+// Where player `p`'s pane sits, in screen units, for drawing the dividers.
+SDL_FRect paneRect(size_t player, size_t players);
+
 enum class Face { Stencil, Marker, Body };
 enum class Align { Left, Center, Right };
 struct Style {
@@ -74,6 +91,10 @@ void wall(double time, SDL_Color light); // grungy wall, CRT light, dust
 // after every other draw: the grade has to fall across the whole image for it to
 // look like one photograph instead of stacked layers.
 void grade(double time);
+// Turns the film grain inside grade() off. It is the most expensive part of the
+// pass - around fifteen tiled fullscreen blits a frame - and the cheapest of the
+// three to lose, so it is the first thing to drop when frames are tight.
+void setGrain(bool on);
 void tape(float cx, float cy, float w, float h, float angleDeg, float shade = 1);
 void plate(float x, float y, float w, float h); // brushed metal panel with screws
 void burnedCd(float cx, float cy, float r, double time);
