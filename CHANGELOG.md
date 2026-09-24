@@ -1,5 +1,93 @@
 # Changelog
 
+## Unreleased
+
+- Customization: Options -> Customize, with a live preview that plays a short
+  chart by itself as you change settings. The number beside each option shows
+  where you are in the list.
+  - **13 highways**: Grip tape (the original), Rosewood (a real fretboard:
+    nickel frets, strings, pearl inlays, bone binding), Synthwave (neon grid,
+    striped sun), Pastel dream, Hellfire (charred rock split by lava veins,
+    embers rising), Diamond plate (tread-plate steel with hazard-stripe
+    rails), Carbon fiber (twill weave, red racing lines), Thunderstorm (storm
+    clouds with lightning striking down the board), Toxic waste (glowing
+    sludge and hazard rails), Zebra, Checkerboard (scuffed punk-stage
+    checkers), Nebula (gas clouds and stars) and Frostbite (cracked ice).
+    Surfaces are painted the first time they're shown, so start-up doesn't
+    pay for thirteen.
+  - **24 note color palettes**. They don't have to follow the fret colors:
+    - Four-color sets: Classic, Pastel, Neon and Colorblind.
+    - One color on every fret: Blood, Bone, Obsidian, Gold record, Platinum,
+      Radioactive and Ghost.
+    - Two colors alternating: Bumblebee, Candy cane, Vaporwave, Royalty and
+      Cyberpunk.
+    - Gradients and sets: Inferno, Glacier, Sunset, Deep sea, Rasta, Arcade,
+      Camo and Sakura.
+    Each palette recolors the gems, fret buttons, sustains, flames and lane
+    labels (dark ones are lightened so the labels stay readable). Star power
+    stays blue.
+  Both are saved with the settings. Reset all options returns them to Grip
+  tape and Classic.
+- Portuguese (Brazilian) translation. The first start asks for a language
+  (English or Português), preselecting the console's own language. It can be
+  changed any time under Options -> Language.
+- The download screen shows the highlighted chart in a detail panel: cover
+  art, album, year, genre, length and charter, then every five-fret part with
+  its intensity and note count per difficulty. Below that, the guitar's peak
+  notes per second, whether it has solos, open notes or taps, and any parts
+  the game can't play (drums, vocals). Covers load on their own thread once
+  the cursor rests, so scrolling and downloads never wait on them.
+- Chart details, covers and previews on the song list load much faster on the
+  console *(hardware)*. Background work used to start on core 0 beside the
+  renderer, and Horizon doesn't time-slice equal-priority threads, so it
+  only ran while a frame waited on vsync. Loaders, cover decoding, preview
+  stems, gem renders and downloads now run on the spare cores at a lower
+  priority. The chart and its cover also load in parallel.
+- Whammy. Moving the Wii guitar's whammy bar, or either stick on a
+  controller (W on a keyboard), while holding a sustain from an intact star
+  phrase fills star power, about a bar every 30 beats, and extends an active
+  star power. Only movement counts, so a resting bar or a drifting stick
+  earns nothing. The audio isn't bent; the sustain wobbles, turns blue while
+  it charges, and the star power meter glows. The MissionControl patch now
+  sends the whammy bar as right stick X.
+- No more freeze after the start-up scan *(hardware)*. The game used to load
+  the selected chart right after the scan and wait on it. Its cover decode
+  could sit behind the start-up gem renders at the same priority, which
+  Horizon never switches between. The title menu now opens at once and the
+  chart loads in the background. Gem renders run below every loader, so a
+  load always goes first.
+- The jewel gems ship pre-rendered in `assets/gems.bin` (1.6 MB) *(hardware)*.
+  Every launch used to ray-march them on four threads. That's 0.6 CPU-seconds
+  on a desktop and several seconds of both spare cores on the console, so the
+  first scan, the background library check and chart loads crawled behind
+  it. It could also hold off the input thread, which froze the main menu. The
+  file now loads in about 5 ms. A `gems` test fails if it stops matching the
+  renderer.
+- The input thread and audio mixer run one step above the main thread, so
+  background work sharing their cores can never starve them.
+- Start-up textures are painted on three cores at once (0.14 s to 0.08 s on
+  a desktop).
+- Start-up no longer waits for a scan *(hardware)*. The song list is cached
+  in `library.cache` next to the settings, so the title menu opens with the
+  last known library right away. The SD card is checked behind the menus, and
+  added or removed songs appear once the check finishes. Only the first start
+  (or a lost cache) shows the scan. A folder whose file names haven't changed
+  keeps its cached title; one exception: an edit to `song.ini` alone isn't
+  picked up.
+- Each song folder is listed once instead of over and over. The scan used to
+  list a folder four or five times per song, and loading a chart tried every
+  stem name and extension with a fresh listing each time. Measured on
+  165 typical song folders: the scan went from 2,499 file system calls to 841,
+  and loading every chart from about 297 calls per song to 11. On the console
+  each call is a round trip to the SD card.
+- The start-up scan runs on a spare core while the main thread only draws its
+  progress. It used to stop on every loading-screen redraw; in the software
+  renderer that turned 0.1 s of scanning 1,500 songs into 55 s.
+- Holding up/down (or the strum bar) or left/right in a menu repeats the move:
+  first after 0.35 s, then every 90 ms, speeding up to 45 ms after 1.6 s held.
+- The fonts now include the Latin-1 range, so accented letters draw as
+  themselves instead of being folded to plain ASCII. Chart titles benefit too.
+
 ## 0.2
 
 The 0.2 release reworks the menus around a Guitar Hero-style flow, replaces

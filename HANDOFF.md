@@ -25,10 +25,13 @@ Unverified on hardware, in priority order:
 - **Frame pacing.** Turn on Options -> Audio / video sync -> Timing overlay.
   The worst frame goes red above 20 ms. `look::grade()`'s grain loop is still
   the first thing to cut.
-- **Gem render time.** The jewel gems are ray-marched on four threads at
-  startup (`gem3d` in `src/look.cpp`, about 0.24 s on an M-series Mac). It runs
-  behind the menus, and `prepareGems()` uploads the textures when a song or
-  video calibration starts.
+- **Gem sprites** ship pre-rendered in `assets/gems.bin`. Ray-marching them
+  at every launch cost several seconds of both spare cores on the console and
+  starved everything else there. Change `gem3d::render()`, then bump
+  `RenderVersion` and run `switch-hero --bake-gems assets/gems.bin`. The
+  `gems` CTest fails until you do. Without the file the game still renders
+  them itself, just slowly. `prepareGems()` colours and uploads them when a
+  song or video calibration starts.
 
 Design decisions from the owner to keep:
 - Gems are cut jewels in a gunmetal bezel, with a white table for hammer-ons

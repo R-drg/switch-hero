@@ -108,6 +108,7 @@ several face buttons under one thumb.
 | Open note (press-to-hit) | Any fret, or A | Any fret, or Space |
 | Strum, if enabled | D-pad up/down | Up/down or Space |
 | Star power | X | Left Shift |
+| Whammy | Wiggle either stick | Hold W |
 | Pause / resume | Plus | P |
 | Move through menus | D-pad up/down | Up/down |
 | Jump to the next/previous letter in the song list | D-pad left/right | Left/right |
@@ -200,13 +201,33 @@ anchoring for single notes. It has the leniency real guitar games have:
 Hammer-ons show a white-hot core. Star-power notes are star-shaped, with the
 same core when they're hammer-ons. Miss any note of a star phrase and the
 phrase is broken: the rest of its notes turn back into regular gems and it
-earns no star power. Judgement and scoring are this game's own
+earns no star power. Whammying a held star-phrase sustain (moving the whammy
+bar, or either stick on a controller) fills star power while it rings, and
+stretches an active star power. Holding the bar still earns nothing. The
+song's pitch doesn't bend; only the sustain wobbles, and it glows blue while
+it's filling the meter. Judgement and scoring are this game's own
 rules, not a promise of exact Clone Hero score parity.
+
+### Customization
+
+Options -> Customize picks the **highway** and the **note colors**.
+
+- **Highways (13):** Grip tape, Rosewood, Synthwave, Pastel dream, Hellfire,
+  Diamond plate, Carbon fiber, Thunderstorm, Toxic waste, Zebra,
+  Checkerboard, Nebula and Frostbite. Some have their own effects: lightning,
+  embers, hazard-stripe rails, neon grid lines or a retro sun.
+- **Note colors (24):** from the four-color sets (Classic, Pastel, Neon,
+  Colorblind) to single-color ones like Blood or Gold record, alternating
+  ones like Bumblebee or Candy cane, and gradients like Inferno or Sunset.
+
+A small preview beside the options plays a chart by itself, so each choice
+can be seen moving before a song. Highways and colors mix freely.
 
 ### Wii guitar over Bluetooth
 
 Select **WII GUITAR** in Options → Gameplay → Controller mode. This uses fixed five-fret
-bindings, strum judgement, guitar menu shortcuts, and Minus for star power.
+bindings, strum judgement, guitar menu shortcuts, Minus for star power and the
+whammy bar.
 Bluetooth needs the supplied **MissionControl guitar-extension patch** from
 [`integrations/missioncontrol/`](integrations/missioncontrol/README.md).
 Installing the game alone, or using stock MissionControl, isn't enough.
@@ -507,6 +528,9 @@ the software works together, not physical sound or output latency.
 - `src/look.cpp`: fonts, procedural textures, gems, fret buttons, fire, UI pieces.
 - `include/guitar_input.hpp`, `integrations/missioncontrol/`: Wii guitar support.
 - `tools/make_fonts.py`: bakes `assets/fonts/*.font` atlases from the bundled TTFs.
+- `switch-hero --bake-gems assets/gems.bin` (desktop build): re-renders the
+  jewel gem sprites the game loads at start-up. Rerun it after changing the gem
+  renderer; the `gems` test checks the file still matches.
 - `tools/build-switch.sh`: devkitPro CMake/NRO build.
 - `tests/`: fixtures and parser, gameplay, audio, timing and download tests.
 - `release/`: the ready-to-copy Switch build and install instructions.
