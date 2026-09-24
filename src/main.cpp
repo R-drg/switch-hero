@@ -744,7 +744,9 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         return std::array<SDL_FPoint, 4>{SDL_FPoint{xx(0, y0), y0}, {xx(5, y0), y0}, {xx(5, y1), y1}, {xx(0, y1), y1}};
     };
     const HighwayTheme &theme = highwayThemes[size_t(std::clamp(settings.highway, 0, int(highwayThemes.size()) - 1))];
-    if (theme.effects & Sun) {
+    // The sun rises above the board's far end; a split-screen board reaches
+    // nearly to the top of its pane, which leaves it no sky to rise in.
+    if ((theme.effects & Sun) && top >= BoardShape{}.top) {
         // Behind the board: the board's far end sits across the sun's lower half.
         glow(640, top - 30, 900, 320, alpha({255, 60, 190, 255}, .35f));
         // Set high enough that its striped lower part clears the horizon.
@@ -1567,7 +1569,11 @@ int main(int argc, char **argv) {
             bool joined = false;
             int partRow = 0, diffRow = 3;
             size_t track = 0;
+            // Each player's own look, kept between songs, and which lobby row
+            // (part, difficulty, highway, note colours) their pad is changing.
+            int highway = -1, palette = -1, field = 1;
         };
+        constexpr int seatFields = 4;
         std::array<Seat, Controller::maxPlayers> seats;
         int lobbyRow = 0; // 0..3 seat being configured by its own pad
         std::vector<std::string> lobbyParts;
@@ -1976,8 +1982,13 @@ int main(int argc, char **argv) {
             if (!song)
                 return;
             lobbyParts = songParts(*song);
-            for (auto &s : seats)
+            for (auto &s : seats) {
+                // A fresh seat for this song, keeping the player's highway and colours.
+                const int highway = s.highway < 0 ? settings.highway : s.highway;
+                const int palette = s.palette < 0 ? settings.palette : s.palette;
                 s = Seat{};
+                s.highway = highway, s.palette = palette;
+            }
             // Player one is already here: they are the one who picked the song.
             seats[0].joined = true;
             for (auto &s : seats) {
@@ -2017,7 +2028,14 @@ int main(int argc, char **argv) {
                 return;
             }
             try {
-                look::prepareGems();
+                // Every player's gems, fret buttons and highway surface are made
+                // now: fret buttons cannot be baked while a pane is being drawn,
+                // and painting a surface there would stall that frame.
+                for (size_t p : whose) {
+                    look::preparePalette(size_t(seats[p].palette));
+                    look::prepareBoard(highwayThemes[size_t(seats[p].highway)].surface);
+                }
+                look::preparePalette(size_t(settings.palette));
                 audio.load(*song);
                 multi = std::make_unique<MultiSession>(*song, tracks, settings.hitWindow);
                 lobbySeats = whose;
@@ -2400,26 +2418,36 @@ int main(int argc, char **argv) {
                         }
                         continue;
                     }
-                    if (pLeft || pRight) {
-                        if (!lobbyParts.empty()) {
-                            const int n = int(lobbyParts.size());
-                            seat.partRow = (seat.partRow + n + (pRight ? 1 : -1)) % n;
-                            seat.diffRow = nearestDifficulty(*song, lobbyParts[size_t(seat.partRow)], seat.diffRow);
-                            audio.playSfx(Sfx::Move);
-                        }
-                    }
+                    // Up/down (or the strum bar) picks a row, left/right changes it.
                     if (pUp || pDown) {
-                        const std::string part = lobbyParts.empty() ? std::string() : lobbyParts[size_t(seat.partRow)];
-                        // Step to the next difficulty that this song actually
-                        // charts, so a seat can never sit on an empty one.
-                        for (int step = 1; step <= 4; ++step) {
-                            const int want = (seat.diffRow + 4 + (pDown ? step : -step)) % 4;
-                            if (findTrack(*song, part, want) >= 0) {
-                                seat.diffRow = want;
-                                audio.playSfx(Sfx::Move);
-                                break;
+                        seat.field = (seat.field + seatFields + (pDown ? 1 : -1)) % seatFields;
+                        audio.playSfx(Sfx::Move);
+                    }
+                    if (pLeft || pRight) {
+                        const int d = pRight ? 1 : -1;
+                        if (seat.field == 0 && !lobbyParts.empty()) {
+                            const int n = int(lobbyParts.size());
+                            seat.partRow = (seat.partRow + n + d) % n;
+                            seat.diffRow = nearestDifficulty(*song, lobbyParts[size_t(seat.partRow)], seat.diffRow);
+                        } else if (seat.field == 1) {
+                            const std::string part = lobbyParts.empty() ? std::string() : lobbyParts[size_t(seat.partRow)];
+                            // Step to the next difficulty that this song actually
+                            // charts, so a seat can never sit on an empty one.
+                            for (int step = 1; step <= 4; ++step) {
+                                const int want = (seat.diffRow + 4 + d * step) % 4;
+                                if (findTrack(*song, part, want) >= 0) {
+                                    seat.diffRow = want;
+                                    break;
+                                }
                             }
+                        } else if (seat.field == 2) {
+                            const int n = int(highwayThemes.size());
+                            seat.highway = (seat.highway + n + d) % n;
+                        } else {
+                            const int n = int(look::palettes().size());
+                            seat.palette = (seat.palette + n + d) % n;
                         }
+                        audio.playSfx(Sfx::Move);
                     }
                     if (pBack) {
                         if (p == 0) {
@@ -4277,11 +4305,34 @@ int main(int argc, char **argv) {
                         text(x + 24, y + 80, tr("press A to join"), marker(28, ink::dim, -3));
                         continue;
                     }
+                    // Four rows, each changed with left/right once picked with up/down.
                     const std::string part =
-                        lobbyParts.empty() ? std::string("guitar") : lobbyParts[size_t(seat.partRow)];
-                    text(x + 24, y + 70, tr(part), body(26, ink::white));
-                    text(x + 24, y + 108, tr(difficultyName(seat.diffRow)), stencil(34, ink::acid, {110, 190, 30, 255}));
-                    text(x + 24, y + 152, tr("up/down difficulty   left/right part"), body(16, ink::faint));
+                        lobbyParts.empty() ? std::string("Guitar") : lobbyParts[size_t(seat.partRow)];
+                    const std::string values[seatFields] = {tr(part), tr(difficultyName(seat.diffRow)),
+                                                            tr(highwayThemes[size_t(seat.highway)].name),
+                                                            tr(look::palettes()[size_t(seat.palette)].name)};
+                    static const char *const labels[seatFields] = {"part", "difficulty", "highway", "notes"};
+                    for (int f = 0; f < seatFields; ++f) {
+                        const float ry = y + 58 + float(f) * 31;
+                        const bool on = f == seat.field;
+                        if (on)
+                            rect(x + 14, ry - 4, 532, 30, {0, 0, 0, 110});
+                        text(x + 30, ry, tr(labels[f]), body(17, on ? ink::white : ink::dim));
+                        auto v = marker(22, on ? ink::acid : SDL_Color{214, 216, 226, 255}, -1);
+                        v.align = Align::Right, v.maxWidth = 250;
+                        text(x + 520, ry - 3, values[f], v);
+                        if (on) {
+                            auto arrow = body(18, ink::acid);
+                            arrow.align = Align::Center;
+                            text(x + 520 - std::min(250.0f, measure(values[f], Face::Marker, 22)) - 16, ry, "<", arrow);
+                            text(x + 536, ry, ">", arrow);
+                        }
+                        if (f == 3) // a swatch of the palette's five fret colours
+                            for (int l = 0; l < 5; ++l)
+                                disc(x + 150 + float(l) * 18, ry + 10, 6, 6,
+                                     look::palettes()[size_t(seat.palette)].lanes[size_t(l)],
+                                     mix(look::palettes()[size_t(seat.palette)].lanes[size_t(l)], {0, 0, 0, 255}, .4f), 16);
+                    }
                 }
                 {
                     size_t ready = 0;
@@ -4290,11 +4341,11 @@ int main(int argc, char **argv) {
                             ++ready;
                     auto note = marker(26, ready >= 2 ? ink::acid : ink::dim, -2);
                     note.align = Align::Center;
-                    text(640, 648, tr(ready >= 2 ? "press PLUS to start" : "at least two players needed"), note);
+                    text(640, 614, tr(ready >= 2 ? "press PLUS to start" : "at least two players needed"), note);
                 }
                 if (!message.empty())
                     text(60, 690, message, marker(22, messageInk(), -1));
-                hints({{glyphAccept, tr("JOIN")}, {glyphBack, tr("LEAVE")}});
+                hints({{glyphAccept, tr("JOIN")}, {"^v", tr("CHOOSE")}, {"<>", tr("CHANGE")}, {glyphBack, tr("LEAVE")}});
             } else if (multi && song) {
                 // During the count-in the board is frozen where the song will
                 // resume, so everyone can see what is about to arrive.
@@ -4303,10 +4354,15 @@ int main(int argc, char **argv) {
                 // The wall is the room everyone is in, so it is drawn once behind
                 // every pane rather than once per pane, where the seams would show.
                 wall(ui, ink::crt);
+                // Each board wears its own player's highway and note colours.
+                Settings looks = settings;
                 for (size_t i = 0; i < n; ++i) {
                     const auto &p = (*multi)[i];
+                    const auto &seat = seats[i < lobbySeats.size() ? lobbySeats[i] : i];
                     look::setViewport(i, n);
-                    highway(*song, p, settings, time - settings.videoMs / 1000, seatFretsNow[i], ui, splitBoard);
+                    look::setPalette(size_t(seat.palette)); // prepared when the song started
+                    looks.highway = seat.highway;
+                    highway(*song, p, looks, time - settings.videoMs / 1000, seatFretsNow[i], ui, splitBoard);
                     // A compact HUD: at a quarter of the screen the full one does
                     // not fit, and what matters mid-song is score, streak and how
                     // close the meter is to the floor.
@@ -4365,6 +4421,7 @@ int main(int argc, char **argv) {
                     }
                     look::clearViewport();
                 }
+                look::setPalette(size_t(settings.palette)); // back to player one's for the menus
                 // Dividers, drawn full screen so they are one clean line rather
                 // than two half-lines meeting at a seam.
                 {

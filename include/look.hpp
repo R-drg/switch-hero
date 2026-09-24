@@ -31,6 +31,11 @@ struct Palette {
 const std::vector<Palette> &palettes();
 // Recolours the gems, fret buttons, sustains and flames. Call on the main thread.
 void setPalette(size_t index);
+size_t currentPalette();
+// Makes a palette's gems and fret buttons now, so switching to it mid-frame is
+// free: split screen prepares each player's palette before the song starts,
+// since fret buttons cannot be baked while a pane's viewport is set.
+void preparePalette(size_t index);
 
 void init(SDL_Renderer *r);
 void rebuild(); // after SDL_RENDER_DEVICE_RESET / SDL_RENDER_TARGETS_RESET
@@ -149,6 +154,8 @@ enum class Board {
 constexpr int BoardCount = 13;
 // One strip of highway surface: corners clockwise from the far left, texture
 // rows v0 to v1 (0 to 1), multiplied by tint.
+// Paints a highway surface now instead of on its first draw.
+void prepareBoard(Board surface);
 void board(Board surface, const std::array<SDL_FPoint, 4> &corners, float v0, float v1, SDL_Color tint);
 struct Fire {
     float x;

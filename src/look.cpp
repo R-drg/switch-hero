@@ -343,8 +343,48 @@ constexpr int FlameFrames = 8;
 std::array<std::array<SDL_Texture *, FlameFrames>, 2> flameTex{};
 constexpr int SpriteW = 256, SpriteH = 192;
 constexpr float SpriteCx = 128, SpriteCy = 72, SpriteRx = 116, SpriteRy = 50;
-std::array<std::array<SDL_Texture *, GemStyles>, 6> gemTex{};
-std::array<std::array<SDL_Texture *, 2>, 5> receptorTex{};
+// Gem and fret-button textures, one set per note colour palette. Split screen
+// can show a different palette on every board, so the sets are kept rather
+// than rebuilt on each switch; the least recently used go past a handful.
+struct PaletteSet {
+    size_t palette = 0;
+    uint64_t used = 0;
+    std::array<std::array<SDL_Texture *, GemStyles>, 6> gems{};
+    std::array<std::array<SDL_Texture *, 2>, 5> receptors{};
+    void destroy() {
+        for (auto &set : gems)
+            for (auto *&t : set)
+                SDL_DestroyTexture(t), t = nullptr;
+        for (auto &set : receptors)
+            for (auto *&t : set)
+                SDL_DestroyTexture(t), t = nullptr;
+    }
+};
+constexpr size_t maxPaletteSets = 6; // four players, plus room to browse
+std::vector<PaletteSet> paletteSets;
+size_t activePalette = 0;
+uint64_t paletteClock = 0;
+bool texturesReady = false; // createAll() has run, so fret buttons can be baked
+// The set for the palette in use, made (evicting the stalest) if missing.
+// The reference is only good until the next call.
+PaletteSet &paletteSet() {
+    for (auto &set : paletteSets)
+        if (set.palette == activePalette) {
+            set.used = ++paletteClock;
+            return set;
+        }
+    if (paletteSets.size() >= maxPaletteSets) {
+        auto oldest = std::min_element(paletteSets.begin(), paletteSets.end(),
+                                       [](const PaletteSet &a, const PaletteSet &b) { return a.used < b.used; });
+        flushBatch(); // queued draws may still use its textures
+        oldest->destroy();
+        paletteSets.erase(oldest);
+    }
+    paletteSets.push_back({});
+    paletteSets.back().palette = activePalette;
+    paletteSets.back().used = ++paletteClock;
+    return paletteSets.back();
+}
 
 void fan(const std::vector<SDL_FPoint> &edge, SDL_FPoint centre, SDL_Color inner, SDL_Color outer) {
     std::vector<SDL_Vertex> v{{centre, inner, {0, 0}}};
@@ -840,12 +880,10 @@ void destroyAll() {
     for (auto &set : flameTex)
         for (auto *&t : set)
             SDL_DestroyTexture(t), t = nullptr;
-    for (auto &set : gemTex)
-        for (auto *&t : set)
-            SDL_DestroyTexture(t), t = nullptr;
-    for (auto &set : receptorTex)
-        for (auto *&t : set)
-            SDL_DestroyTexture(t), t = nullptr;
+    for (auto &set : paletteSets)
+        set.destroy();
+    paletteSets.clear();
+    texturesReady = false;
 }
 // A highway surface, 256 px square. Each tiles top to bottom, since it scrolls
 // down the board: every noise period and pattern cell divides 256. Nothing
@@ -1111,13 +1149,18 @@ void createAll() {
                       SDL_BLENDMODE_ADD);
     // Gem textures are uploaded on first use (see gem()); only start rendering.
     gem3d::start();
+    texturesReady = true;
     bakeReceptors();
 }
+// The current palette's fret buttons. This switches render targets, so it
+// must not run while a split-screen pane's viewport is set.
 void bakeReceptors() {
-    for (size_t i = 0; i < receptorTex.size(); ++i)
+    for (size_t i = 0; i < 5; ++i)
         for (int pressed = 0; pressed < 2; ++pressed) {
-            SDL_DestroyTexture(receptorTex[i][pressed]);
-            receptorTex[i][pressed] = bakeTarget([&] { bakeReceptor(lanes[i], pressed); });
+            auto &slot = paletteSet().receptors[i][size_t(pressed)];
+            SDL_DestroyTexture(slot);
+            SDL_Texture *t = bakeTarget([&] { bakeReceptor(lanes[i], pressed); });
+            paletteSet().receptors[i][size_t(pressed)] = t;
         }
 }
 // Sprites go through the batch too, tinted by vertex colour rather than the
@@ -1219,20 +1262,23 @@ bool checkGems(std::string &problem) {
     return true;
 }
 void setPalette(size_t index) {
-    static size_t current = 0;
     index = std::min(index, palettes().size() - 1);
-    if (index == current)
-        return;
-    current = index;
+    activePalette = index;
     lanes = palettes()[index].lanes;
-    // Gems recolour on their next draw from the baked renders; the star power
-    // colour does not change. Fret buttons are baked again now.
-    for (size_t color = 0; color < gemTex.size(); ++color)
-        if (color != PowerColor)
-            for (auto *&t : gemTex[color])
-                SDL_DestroyTexture(t), t = nullptr;
-    if (renderer && receptorTex[0][0])
+    // Switching back to a palette already shown costs nothing. A new one has
+    // its fret buttons baked now; its gems are made on first draw.
+    if (renderer && texturesReady && !paletteSet().receptors[0][0])
         bakeReceptors();
+}
+size_t currentPalette() { return activePalette; }
+void preparePalette(size_t index) {
+    setPalette(index);
+    prepareGems();
+}
+void prepareBoard(Board surface) {
+    auto &texture = boardTex[size_t(std::clamp(int(surface), 0, BoardCount - 1))];
+    if (!texture)
+        texture = upload(paintBoard(surface), SDL_BLENDMODE_BLEND);
 }
 void init(SDL_Renderer *r) {
     renderer = r;
@@ -1653,25 +1699,27 @@ void rockMeter(float x, float y, float w, float h, float value, double time, boo
 }
 // ---------------------------------------------------------------- highway
 void prepareGems() {
-    for (size_t i = 0; i < gemTex.size(); ++i)
+    auto &gems = paletteSet().gems;
+    for (size_t i = 0; i < gems.size(); ++i)
         for (int style = 0; style < GemStyles; ++style)
-            if (!gemTex[i][style])
-                gemTex[i][style] = gem3d::texture(i == PowerColor ? ink::power : lanes[i], GemStyle(style));
+            if (!gems[i][size_t(style)])
+                gems[i][size_t(style)] = gem3d::texture(i == PowerColor ? ink::power : lanes[i], GemStyle(style));
 }
 void gem(size_t color, GemStyle style, float x, float y, float w, Uint8 a, float squash) {
-    auto &tex = gemTex[color][style];
+    auto &tex = paletteSet().gems[color][size_t(style)];
     if (!tex)
         tex = gem3d::texture(color == PowerColor ? ink::power : lanes[color], style);
     const float scale = w / (SpriteRx * 2);
-    blit(gemTex[color][style], x - SpriteCx * scale, y - SpriteCy * scale * squash, SpriteW * scale,
-         SpriteH * scale * squash, {255, 255, 255, a});
+    blit(tex, x - SpriteCx * scale, y - SpriteCy * scale * squash, SpriteW * scale, SpriteH * scale * squash,
+         {255, 255, 255, a});
 }
 void receptor(size_t lane, float x, float y, float w, bool pressed, bool power, float hitFlash) {
     const float scale = w / (SpriteRx * 2);
     SDL_Color c = power ? ink::power : lanes[lane];
     if (pressed)
         glow(x, y + 10, w * 1.9f, w * .75f, alpha(c, .8f)); // neon underglow
-    blit(receptorTex[lane][pressed], x - SpriteCx * scale, y - SpriteCy * scale, SpriteW * scale, SpriteH * scale);
+    blit(paletteSet().receptors[lane][pressed ? 1 : 0], x - SpriteCx * scale, y - SpriteCy * scale, SpriteW * scale,
+         SpriteH * scale);
     if (hitFlash > 0) {
         // A hit, not just a press: the neon lining flares white-hot.
         const float ring = w * (.95f + .25f * (1 - hitFlash));
