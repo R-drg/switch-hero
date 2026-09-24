@@ -2,6 +2,7 @@
 #include "enchor.hpp"
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,9 @@ class Downloader {
         double megabytes = 0;   // downloaded so far
         int downloads = 0;      // finished this session
         std::string lastFolder; // the newest finished download
+        // The chart downloading now (md5 and title), and those waiting, in order.
+        std::string current, currentName;
+        std::vector<std::string> queued;
         bool more() const { return int(results.size()) < found; }
     };
 
@@ -34,13 +38,22 @@ class Downloader {
     Downloader(const Downloader &) = delete;
     Downloader &operator=(const Downloader &) = delete;
 
-    // A new query replaces the results; nextPage() appends to them.
+    // A new query replaces the results; nextPage() appends to them. A search
+    // runs before the next queued download.
     void search(const std::string &query);
     void nextPage();
+    // Adds a chart to the download queue; one already queued or downloading is ignored.
     void download(const enchor::Chart &chart);
-    // Abandons a download in progress.
+    // Takes a chart off the queue if it has not started.
+    void unqueue(const std::string &md5);
+    // Abandons the download in progress.
     void cancel();
+    // Abandons the download in progress and empties the queue.
+    void cancelAll();
     View view() const;
+    // Downloads finished so far: cheap enough to poll every frame.
+    int completed() const;
+    bool busy() const; // downloading, or charts waiting
     bool inLibrary(const enchor::Chart &chart) const;
 
     // Cover art, fetched on its own thread so it never waits behind a
@@ -68,7 +81,8 @@ class Downloader {
     std::filesystem::path library;
     mutable std::mutex mutex;
     std::condition_variable wake;
-    Job pending;
+    Job pending;           // searches only
+    std::deque<enchor::Chart> queue; // downloads waiting their turn
     View state;
     std::atomic<bool> stopping{false}, cancelled{false};
     std::mutex networkMutex;

@@ -178,24 +178,47 @@ void Downloader::search(const std::string &query) {
 }
 void Downloader::nextPage() {
     std::lock_guard<std::mutex> lock(mutex);
-    if (state.state != State::Idle || pending.kind != Job::Kind::None || !state.more())
+    // Browsing carries on while the queue downloads: the page is fetched
+    // before the next queued chart starts.
+    if (state.state == State::Searching || pending.kind != Job::Kind::None || !state.more())
         return;
     pending = {Job::Kind::Search, state.query, state.page + 1, {}};
     wake.notify_all();
 }
 void Downloader::download(const enchor::Chart &chart) {
     std::lock_guard<std::mutex> lock(mutex);
-    if (state.state == State::Downloading)
+    if (chart.md5 == state.current ||
+        std::find(state.queued.begin(), state.queued.end(), chart.md5) != state.queued.end())
         return;
-    pending = {Job::Kind::Download, {}, 0, chart};
-    cancelled = false;
+    queue.push_back(chart);
+    state.queued.push_back(chart.md5);
     state.error.clear();
     wake.notify_all();
 }
+void Downloader::unqueue(const std::string &md5) {
+    std::lock_guard<std::mutex> lock(mutex);
+    queue.erase(std::remove_if(queue.begin(), queue.end(), [&](const enchor::Chart &c) { return c.md5 == md5; }),
+                queue.end());
+    state.queued.erase(std::remove(state.queued.begin(), state.queued.end(), md5), state.queued.end());
+}
 void Downloader::cancel() { cancelled = true; }
+void Downloader::cancelAll() {
+    std::lock_guard<std::mutex> lock(mutex);
+    queue.clear();
+    state.queued.clear();
+    cancelled = true;
+}
 Downloader::View Downloader::view() const {
     std::lock_guard<std::mutex> lock(mutex);
     return state;
+}
+int Downloader::completed() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return state.downloads;
+}
+bool Downloader::busy() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return !state.current.empty() || !queue.empty();
 }
 bool Downloader::inLibrary(const enchor::Chart &chart) const {
     std::error_code ec;
@@ -208,11 +231,19 @@ void Downloader::run() {
         Job job;
         {
             std::unique_lock<std::mutex> lock(mutex);
-            wake.wait(lock, [&] { return stopping || pending.kind != Job::Kind::None; });
+            wake.wait(lock, [&] { return stopping || pending.kind != Job::Kind::None || !queue.empty(); });
             if (stopping)
                 return;
-            job = std::move(pending);
-            pending = {};
+            if (pending.kind != Job::Kind::None) {
+                job = std::move(pending);
+                pending = {};
+            } else {
+                job = {Job::Kind::Download, {}, 0, std::move(queue.front())};
+                queue.pop_front();
+                state.queued.erase(state.queued.begin());
+                state.current = job.chart.md5, state.currentName = job.chart.name;
+                cancelled = false;
+            }
             state.state = job.kind == Job::Kind::Search ? State::Searching : State::Downloading;
             state.status = job.kind == Job::Kind::Search ? "searching" : "connecting";
             state.progress = 0, state.megabytes = 0;
@@ -230,6 +261,8 @@ void Downloader::run() {
         std::lock_guard<std::mutex> lock(mutex);
         state.state = State::Idle;
         state.status.clear();
+        if (job.kind == Job::Kind::Download)
+            state.current.clear(), state.currentName.clear();
     }
 }
 

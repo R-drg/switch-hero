@@ -2177,28 +2177,42 @@ int main(int argc, char **argv) {
                     // Fetch the next page before the player reaches the end of this one.
                     if (count && downloadRow + 4 >= count && downloads.more())
                         downloader->nextPage();
-                    if (accept && count && downloads.state != Downloader::State::Downloading) {
-                        if (owned[downloadRow])
+                    // A queues a chart, or takes it back off the queue; the one
+                    // downloading now keeps going.
+                    if (accept && count) {
+                        const auto &chart = downloads.results[downloadRow];
+                        const bool queued = std::find(downloads.queued.begin(), downloads.queued.end(), chart.md5) !=
+                                            downloads.queued.end();
+                        if (owned[downloadRow] || chart.md5 == downloads.current)
                             audio.playSfx(Sfx::Back);
-                        else {
-                            downloader->download(downloads.results[downloadRow]);
+                        else if (queued) {
+                            downloader->unqueue(chart.md5);
+                            audio.playSfx(Sfx::Toggle);
+                        } else {
+                            downloader->download(chart);
                             audio.playSfx(Sfx::Select);
                         }
+                    }
+                    if (((!settings.wiiGuitar && press(3)) || (guitarMenu && press(33)) || key(SDL_SCANCODE_X)) &&
+                        (!downloads.current.empty() || !downloads.queued.empty())) {
+                        downloader->cancelAll();
+                        audio.playSfx(Sfx::Back);
                     }
                     if (secondary || key(SDL_SCANCODE_SLASH)) {
                         audio.playSfx(Sfx::Select, .7f);
                         openSearch();
                     }
                     if (back) {
+                        // Back always leaves; a queue keeps downloading behind the
+                        // menus, and its songs join the list as they finish.
                         audio.playSfx(Sfx::Back);
-                        if (downloads.state == Downloader::State::Downloading)
-                            downloader->cancel();
-                        else {
+                        screen = downloadReturn;
+                        retire(downloadArt);
+                        artUrl.clear();
+                        if (downloads.current.empty() && downloads.queued.empty()) {
                             // Pick up what was downloaded, and land on the newest one.
-                            screen = downloadReturn;
-                            retire(downloadArt);
-                            artUrl.clear();
                             if (downloads.downloads != downloadsSeen) {
+                                downloadsSeen = downloads.downloads;
                                 scanLibrary(entries);
                                 sortEntries();
                                 for (size_t i = 0; i < entries.size(); ++i)
@@ -2587,6 +2601,16 @@ int main(int argc, char **argv) {
                     }
                     audio.playSfx(Sfx::Select);
                 }
+            }
+            // Downloads finishing while the player is elsewhere: check the card
+            // again behind the menus, so the new songs join the list.
+            if (downloader && screen != Screen::Download && !refresh.valid() && downloader->completed() != downloadsSeen) {
+                downloadsSeen = downloader->completed();
+                refreshVersion = libraryVersion;
+                refresh = std::async(std::launch::async, [&root, known = entries, &stopRefresh] {
+                    runInBackground();
+                    return fret::scanLibrary(root, known, {}, &stopRefresh);
+                });
             }
             // The background check of the card: when it finds the cached list out
             // of date, swap in the fresh one, keeping the cursor on its song.
@@ -3258,10 +3282,20 @@ int main(int argc, char **argv) {
                     by.maxWidth = 420;
                     text(122, y + 26, c.artist, by);
                     pips(566, y + 14, c.guitarDifficulty, 4.5f, 13);
-                    if (have) {
-                        auto tag = marker(18, ink::acid, -2);
+                    // Where the chart stands: in the library, downloading, or waiting its turn.
+                    const auto queuedAt = std::find(downloads.queued.begin(), downloads.queued.end(), c.md5);
+                    std::string tagText;
+                    SDL_Color tagInk = ink::acid;
+                    if (have)
+                        tagText = tr("in library");
+                    else if (c.md5 == downloads.current)
+                        tagText = tr("downloading {}%", int(downloads.progress * 100)), tagInk = {255, 196, 40, 255};
+                    else if (queuedAt != downloads.queued.end())
+                        tagText = tr("queued #{}", queuedAt - downloads.queued.begin() + 1), tagInk = {120, 200, 255, 255};
+                    if (!tagText.empty()) {
+                        auto tag = marker(18, tagInk, -2);
                         tag.align = Align::Right;
-                        text(684, y + 22, tr("in library"), tag);
+                        text(684, y + 22, tagText, tag);
                     }
                 }
                 plate(720, 226, 500, 380);
@@ -3357,9 +3391,14 @@ int main(int argc, char **argv) {
                 // Status line: progress, errors, or what the list holds.
                 if (downloads.state == Downloader::State::Downloading) {
                     ledMeter(66, 628, 420, 14, 28, downloads.progress, true, ui);
-                    char line[96];
-                    std::snprintf(line, sizeof line, "%s   %.1f MB", downloads.status.c_str(), downloads.megabytes);
-                    text(510, 622, line, body(18, ink::dim));
+                    char mb[32];
+                    std::snprintf(mb, sizeof mb, "%.1f MB", downloads.megabytes);
+                    std::string line = tr(downloads.status) + "   " + mb;
+                    if (!downloads.queued.empty())
+                        line += "   " + tr("{} more queued", downloads.queued.size());
+                    auto status = body(18, ink::dim);
+                    status.maxWidth = 690;
+                    text(510, 622, line, status);
                 } else if (!downloads.error.empty())
                     text(62, 620, tr(downloads.error), marker(22, ink::blood, -1));
                 else if (downloads.state == Downloader::State::Searching)
@@ -3372,9 +3411,13 @@ int main(int argc, char **argv) {
                 if (typing) {
                     hints({{"ENT", tr("SEARCH")}, {"ESC", tr("CANCEL")}}); // desktop typing only
                 } else {
-                    hints({{glyphAccept, "DOWNLOAD"},
-                           {glyphAlt, "SEARCH"},
-                           {glyphBack, downloads.state == Downloader::State::Downloading ? "CANCEL" : "BACK"}});
+                    std::vector<std::pair<std::string, std::string>> items = {
+                        {glyphAccept, tr(downloads.current.empty() && downloads.queued.empty() ? "DOWNLOAD" : "QUEUE")},
+                        {glyphAlt, tr("SEARCH")},
+                        {glyphBack, tr("BACK")}};
+                    if (!downloads.current.empty() || !downloads.queued.empty())
+                        items.push_back({settings.wiiGuitar ? fretGlyph(3) : "X", tr("CANCEL ALL")});
+                    hints(items);
                 }
             } else if (screen == Screen::Calibrate) {
                 const double time = calibrationTime();

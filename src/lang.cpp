@@ -330,6 +330,13 @@ const std::pair<const char *, const char *> portugueseTable[] = {
     {"Plus pause    strum with no frets for open notes    X star power",
      "Mais pausa    palhete sem trastes para notas abertas    X star power"},
 
+    // Download queue
+    {"downloading {}%", "baixando {}%"},
+    {"queued #{}", "na fila #{}"},
+    {"{} more queued", "mais {} na fila"},
+    {"QUEUE", "ADICIONAR"},
+    {"CANCEL ALL", "CANCELAR TUDO"},
+
     // Pause and results
     {"PAUSED", "PAUSADO"},
     {"SONG FAILED", "VOCÊ FALHOU"},
