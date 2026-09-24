@@ -25,8 +25,71 @@
 
 namespace fret::look {
 SDL_Renderer *renderer = nullptr;
-const std::array<SDL_Color, 6> lanes = {SDL_Color{40, 210, 70, 255}, {232, 36, 44, 255}, {250, 208, 28, 255},
-                                        {38, 112, 246, 255},          {255, 132, 18, 255}, {178, 76, 255, 255}};
+const std::vector<Palette> &palettes() {
+    // Six colours each: green, red, yellow, blue and orange frets, then open
+    // notes. Palettes need not follow the frets: lane position alone tells
+    // the notes apart, so a palette may repeat a colour or be one colour.
+    auto one = [](SDL_Color c, SDL_Color open) { return std::array<SDL_Color, 6>{c, c, c, c, c, open}; };
+    auto two = [](SDL_Color a, SDL_Color b, SDL_Color open) { return std::array<SDL_Color, 6>{a, b, a, b, a, open}; };
+    static const std::vector<Palette> list = {
+        {"CLASSIC",
+         {SDL_Color{40, 210, 70, 255}, {232, 36, 44, 255}, {250, 208, 28, 255}, {38, 112, 246, 255}, {255, 132, 18, 255},
+          {178, 76, 255, 255}}},
+        // Soft and milky, but still five hues far enough apart to read at speed:
+        // mint, rose, butter, baby blue, peach, and lavender for open notes.
+        {"PASTEL",
+         {SDL_Color{140, 226, 170, 255}, {255, 150, 172, 255}, {255, 232, 140, 255}, {148, 196, 255, 255},
+          {255, 186, 138, 255}, {200, 166, 255, 255}}},
+        {"NEON",
+         {SDL_Color{57, 255, 20, 255}, {255, 20, 110, 255}, {255, 240, 0, 255}, {0, 210, 255, 255}, {255, 110, 0, 255},
+          {196, 60, 255, 255}}},
+        // Okabe-Ito colours, which stay distinct with the common colour blindnesses.
+        {"COLORBLIND",
+         {SDL_Color{0, 158, 115, 255}, {213, 94, 0, 255}, {240, 228, 66, 255}, {86, 180, 233, 255}, {230, 159, 0, 255},
+          {204, 121, 167, 255}}},
+        // One colour for every fret.
+        {"BLOOD", one({196, 8, 18, 255}, {110, 0, 10, 255})},
+        {"BONE", one({232, 222, 196, 255}, {170, 158, 132, 255})},
+        {"OBSIDIAN", one({52, 40, 74, 255}, {120, 60, 160, 255})},
+        {"GOLD RECORD", one({255, 190, 30, 255}, {255, 236, 160, 255})},
+        {"PLATINUM", one({206, 212, 226, 255}, {150, 160, 180, 255})},
+        {"RADIOACTIVE", one({120, 255, 40, 255}, {230, 255, 60, 255})},
+        {"GHOST", one({190, 214, 236, 255}, {240, 248, 255, 255})},
+        // Two colours, alternating across the neck.
+        {"BUMBLEBEE", two({255, 206, 0, 255}, {34, 32, 30, 255}, {255, 236, 120, 255})},
+        {"CANDY CANE", two({230, 20, 40, 255}, {244, 244, 240, 255}, {120, 220, 120, 255})},
+        {"VAPORWAVE", two({255, 106, 200, 255}, {70, 230, 255, 255}, {180, 120, 255, 255})},
+        {"ROYALTY", two({120, 40, 200, 255}, {255, 196, 40, 255}, {250, 240, 220, 255})},
+        {"CYBERPUNK", two({255, 230, 0, 255}, {255, 0, 150, 255}, {0, 255, 240, 255})},
+        // Gradients across the neck.
+        {"INFERNO",
+         {SDL_Color{255, 40, 0, 255}, {255, 100, 0, 255}, {255, 190, 0, 255}, {255, 100, 0, 255}, {255, 40, 0, 255},
+          {255, 240, 190, 255}}},
+        {"GLACIER",
+         {SDL_Color{150, 236, 255, 255}, {80, 190, 255, 255}, {220, 250, 255, 255}, {40, 130, 230, 255},
+          {170, 220, 255, 255}, {255, 255, 255, 255}}},
+        {"SUNSET",
+         {SDL_Color{255, 90, 120, 255}, {255, 130, 90, 255}, {255, 190, 90, 255}, {200, 90, 200, 255},
+          {120, 70, 200, 255}, {255, 220, 180, 255}}},
+        {"DEEP SEA",
+         {SDL_Color{0, 200, 180, 255}, {0, 140, 200, 255}, {60, 230, 220, 255}, {20, 80, 180, 255}, {0, 170, 140, 255},
+          {140, 255, 240, 255}}},
+        {"RASTA",
+         {SDL_Color{0, 160, 60, 255}, {255, 210, 0, 255}, {220, 20, 30, 255}, {255, 210, 0, 255}, {0, 160, 60, 255},
+          {40, 30, 20, 255}}},
+        {"ARCADE",
+         {SDL_Color{0, 228, 54, 255}, {255, 0, 77, 255}, {255, 236, 39, 255}, {41, 173, 255, 255}, {255, 163, 0, 255},
+          {255, 119, 168, 255}}},
+        {"CAMO",
+         {SDL_Color{96, 112, 52, 255}, {136, 110, 70, 255}, {70, 88, 44, 255}, {160, 144, 100, 255}, {84, 70, 50, 255},
+          {186, 176, 130, 255}}},
+        {"SAKURA",
+         {SDL_Color{255, 196, 214, 255}, {240, 110, 160, 255}, {255, 236, 244, 255}, {200, 80, 140, 255},
+          {255, 160, 190, 255}, {140, 200, 120, 255}}},
+    };
+    return list;
+}
+std::array<SDL_Color, 6> lanes = palettes()[0].lanes;
 namespace {
 constexpr float Tau = 6.2831853f;
 
@@ -240,8 +303,8 @@ std::string sanitize(const std::string &s) {
 
 // ---------------------------------------------------------------- baked art
 SDL_Texture *glowTex = nullptr, *wallTex = nullptr, *vignetteTex = nullptr, *scanTex = nullptr, *tapeTex = nullptr,
-            *metalTex = nullptr, *gripTex = nullptr, *grainTex = nullptr, *ringTex = nullptr, *sparkTex = nullptr,
-            *flareTex = nullptr;
+            *metalTex = nullptr, *grainTex = nullptr, *ringTex = nullptr, *sparkTex = nullptr, *flareTex = nullptr;
+std::array<SDL_Texture *, BoardCount> boardTex{};
 constexpr int FlameFrames = 8;
 std::array<std::array<SDL_Texture *, FlameFrames>, 2> flameTex{};
 constexpr int SpriteW = 256, SpriteH = 192;
@@ -731,8 +794,10 @@ void destroyAll() {
         SDL_DestroyTexture(f.haloTexture);
         f.alphaTexture = f.haloTexture = nullptr;
     }
-    for (auto **t : {&glowTex, &wallTex, &vignetteTex, &scanTex, &tapeTex, &metalTex, &gripTex, &grainTex, &ringTex,
-                     &sparkTex, &flareTex}) {
+    for (auto *&t : boardTex)
+        SDL_DestroyTexture(t), t = nullptr;
+    for (auto **t : {&glowTex, &wallTex, &vignetteTex, &scanTex, &tapeTex, &metalTex, &grainTex, &ringTex, &sparkTex,
+                     &flareTex}) {
         SDL_DestroyTexture(*t);
         *t = nullptr;
     }
@@ -746,6 +811,146 @@ void destroyAll() {
         for (auto *&t : set)
             SDL_DestroyTexture(t), t = nullptr;
 }
+// A highway surface, 256 px square. Each tiles top to bottom, since it scrolls
+// down the board: every noise period and pattern cell divides 256. Nothing
+// needs to tile across, as the board shows it once wide.
+Canvas paintBoard(Board surface) {
+    auto ridge = [](float n, float sharp) { return std::pow(1 - std::abs(n * 2 - 1), sharp); };
+    auto spark = [](int x, int y, uint32_t seed, float odds) { return hash01(uint32_t(x * 7331 + y * 2711) ^ seed) > odds; };
+    switch (surface) {
+    case Board::Rosewood:
+        // Grain running along the neck, with open pores.
+        return paint(256, 256, [&](int x, int y) {
+            const float lines = valueNoise(x / 3.0f, 0, 4096, 41) * .55f + valueNoise(x / 11.0f, 0, 4096, 43) * .45f;
+            const float figure = fbm(x / 32.0f, y / 32.0f, 8, 47, 4);
+            const float grain = std::clamp(lines * .7f + figure * .5f - .1f, 0.0f, 1.0f);
+            const float k = spark(x, y, 0, .985f) ? .55f : 1;
+            return SDL_Color{u8((52 + grain * 46) * k), u8((26 + grain * 20) * k), u8((20 + grain * 12) * k), 255};
+        });
+    case Board::Synthwave:
+        // Deep violet with a faint haze and a few stars; the grid goes on top.
+        return paint(256, 256, [&](int x, int y) {
+            const float n = fbm(x / 32.0f, y / 32.0f, 8, 53, 3);
+            const float star = spark(x, y, 5, .997f) ? 60 : 0;
+            return SDL_Color{u8(18 + n * 16 + star), u8(8 + n * 6 + star), u8(34 + n * 24 + star), 255};
+        });
+    case Board::Pastel:
+        // Drifting lilac, pink and baby-blue clouds with the odd sparkle.
+        return paint(256, 256, [&](int x, int y) {
+            const float a = fbm(x / 64.0f, y / 64.0f, 4, 61, 4), b = fbm(x / 48.0f, y / 64.0f + 7, 4, 67, 3);
+            const SDL_Color lilac{222, 206, 246, 255}, pink{250, 212, 232, 255}, blue{206, 226, 252, 255};
+            const SDL_Color c = mix(mix(lilac, pink, smooth(std::clamp(a * 1.8f - .4f, 0.0f, 1.0f))), blue,
+                                    smooth(std::clamp(b * 1.8f - .5f, 0.0f, 1.0f)));
+            return spark(x, y, 9, .996f) ? SDL_Color{255, 255, 255, 255} : c;
+        });
+    case Board::Hellfire:
+        // Charred rock split by glowing lava veins, white-hot at their cores.
+        return paint(256, 256, [&](int x, int y) {
+            const float rock = fbm(x / 16.0f, y / 16.0f, 16, 71, 3);
+            const float vein = ridge(fbm(x / 32.0f, y / 32.0f, 8, 73, 4), 14);
+            const float heat = std::clamp(vein * 1.3f, 0.0f, 1.0f);
+            const SDL_Color base{u8(22 + rock * 22), u8(12 + rock * 10), u8(10 + rock * 8), 255};
+            return mix(mix(base, {230, 60, 10, 255}, heat), {255, 214, 120, 255}, std::clamp(heat * 2 - 1.2f, 0.0f, 1.0f));
+        });
+    case Board::DiamondPlate:
+        // Industrial tread plate: brushed steel with raised diamonds that
+        // alternate direction from cell to cell.
+        return paint(256, 256, [&](int x, int y) {
+            const float brush = valueNoise(x / 2.0f, y / 64.0f, 4096, 79) * 14 + fbm(x / 32.0f, y / 32.0f, 8, 83, 3) * 16;
+            SDL_Color c{u8(78 + brush), u8(82 + brush), u8(90 + brush), 255};
+            const int cx = x % 32, cy = y % 32;
+            const bool flip = ((x / 32) + (y / 32)) % 2;
+            const float u = (cx - 15.5f) / 16, v = (cy - 15.5f) / 16;
+            const float a = flip ? u + v : u - v, b = flip ? u - v : u + v; // rotated 45 degrees
+            const float d = std::abs(a) * .35f + std::abs(b);
+            if (d < .32f) {
+                const float lit = std::clamp(.5f - (a + b) * .9f, 0.0f, 1.0f); // light from the top left
+                c = mix(mix(c, {40, 42, 48, 255}, .5f), {220, 224, 232, 255}, lit * (1 - d / .32f) + .15f);
+            }
+            return c;
+        });
+    case Board::CarbonFiber:
+        // A 2x2 twill weave: tows of fibre crossing over and under, each with
+        // a sheen across its width.
+        return paint(256, 256, [&](int x, int y) {
+            const int tx = x / 8, ty = y / 8;
+            const bool across = ((tx + ty) / 2) % 2 == 0;
+            const float t = across ? (y % 8) / 7.0f : (x % 8) / 7.0f;
+            const float sheen = std::pow(std::sin(t * 3.14159f), 2.0f);
+            const float v = 16 + sheen * (across ? 44 : 30);
+            return SDL_Color{u8(v), u8(v), u8(v * 1.1f + 2), 255};
+        });
+    case Board::Thunderstorm:
+        // Slate storm clouds with faint electric veins.
+        return paint(256, 256, [&](int x, int y) {
+            const float cloud = fbm(x / 64.0f, y / 64.0f, 4, 89, 5);
+            const float charge = ridge(fbm(x / 32.0f, y / 32.0f, 8, 97, 3), 20) * .6f;
+            return mix(SDL_Color{u8(18 + cloud * 34), u8(22 + cloud * 38), u8(32 + cloud * 48), 255},
+                       {150, 200, 255, 255}, charge);
+        });
+    case Board::ToxicWaste:
+        // Black sludge with glowing green seams and bubbles.
+        return paint(256, 256, [&](int x, int y) {
+            const float sludge = fbm(x / 32.0f, y / 32.0f, 8, 101, 4);
+            const float seam = ridge(fbm(x / 64.0f, y / 64.0f, 4, 103, 3), 24) * .75f;
+            const int cx = x % 32, cy = y % 32;
+            const float bx = 6 + hash01(uint32_t(x / 32 * 31 + y / 32 * 17)) * 20, by = 6 + hash01(uint32_t(x / 32 * 13 + y / 32 * 41)) * 20;
+            const float bubble = std::hypot(cx - bx, cy - by);
+            const bool rim = bubble > 3 && bubble < 4.5f && hash01(uint32_t(x / 32 * 7 + y / 32 * 3)) > .5f;
+            SDL_Color c{u8(8 + sludge * 14), u8(20 + sludge * 30), u8(8 + sludge * 10), 255};
+            c = mix(c, {120, 255, 40, 255}, std::clamp(seam * 1.2f, 0.0f, 1.0f));
+            return rim ? mix(c, {170, 255, 90, 255}, .8f) : c;
+        });
+    case Board::Zebra:
+        // Wavy black stripes on off-white, the way a zebra hide runs.
+        return paint(256, 256, [&](int x, int y) {
+            const float warp = fbm(x / 32.0f, y / 32.0f, 8, 107, 3) * 7;
+            const float stripe = std::sin(x * .085f + y * 3.14159f * 4 / 256 + warp);
+            const float grain = fbm(x / 16.0f, y / 16.0f, 16, 109, 2) * 18;
+            return stripe > .1f ? SDL_Color{u8(14 + grain * .4f), u8(14 + grain * .4f), u8(16 + grain * .4f), 255}
+                                : SDL_Color{u8(222 - grain), u8(220 - grain), u8(210 - grain), 255};
+        });
+    case Board::Checkerboard:
+        // Scuffed punk checkers, the kind painted on a stage floor.
+        return paint(256, 256, [&](int x, int y) {
+            const bool light = ((x / 32) + (y / 32)) % 2;
+            const float wear = fbm(x / 32.0f, y / 32.0f, 8, 113, 4);
+            const bool scratch = ridge(fbm(x / 16.0f, y / 64.0f, 16, 127, 2), 40) > .6f;
+            const float v = light ? 214 - wear * 70 : 20 + wear * 22;
+            return scratch ? SDL_Color{u8(v * .7f + 40), u8(v * .7f + 40), u8(v * .7f + 44), 255}
+                           : SDL_Color{u8(v), u8(v), u8(v * .98f), 255};
+        });
+    case Board::Nebula:
+        // Deep space: violet and teal gas clouds and a field of stars.
+        return paint(256, 256, [&](int x, int y) {
+            const float a = fbm(x / 64.0f, y / 64.0f, 4, 131, 5), b = fbm(x / 32.0f, y / 32.0f, 8, 137, 4);
+            SDL_Color c{6, 6, 16, 255};
+            c = mix(c, {120, 40, 170, 255}, smooth(std::clamp(a * 2 - .7f, 0.0f, 1.0f)) * .8f);
+            c = mix(c, {20, 150, 170, 255}, smooth(std::clamp(b * 2 - .9f, 0.0f, 1.0f)) * .6f);
+            if (spark(x, y, 11, .994f))
+                c = mix(c, {255, 255, 255, 255}, .5f + hash01(uint32_t(x * 17 + y)) * .5f);
+            return c;
+        });
+    case Board::Frostbite:
+        // Blue ice cracked with white frost.
+        return paint(256, 256, [&](int x, int y) {
+            const float depth = fbm(x / 64.0f, y / 64.0f, 4, 139, 4);
+            const float crack = ridge(fbm(x / 32.0f, y / 32.0f, 8, 149, 4), 30);
+            SDL_Color c = mix(SDL_Color{28, 70, 120, 255}, {120, 190, 230, 255}, depth);
+            c = mix(c, {196, 232, 255, 255}, std::clamp(crack * .8f, 0.0f, 1.0f));
+            return spark(x, y, 13, .993f) ? SDL_Color{255, 255, 255, 255} : c;
+        });
+    case Board::GripTape:
+    default:
+        // Skateboard grip tape: near-black grit.
+        return paint(256, 256, [&](int x, int y) {
+            const float g = hash01(uint32_t(x * 5471 + y * 9133));
+            const float v = 20 + (g > .82f ? (g - .82f) * 160 : 0) + fbm(x / 32.0f, y / 32.0f, 8, 3, 3) * 10;
+            return SDL_Color{u8(v), u8(v), u8(v + 2), 255};
+        });
+    }
+}
+void bakeReceptors(); // the fret buttons, in the current palette
 void createAll() {
     destroyAll();
     for (auto &f : fonts) {
@@ -810,14 +1015,8 @@ void createAll() {
                                 return SDL_Color{u8(v), u8(v + 1), u8(v + 6), 255};
                             }),
                       SDL_BLENDMODE_BLEND);
-    // Skateboard grip tape: near-black grit.
-    gripTex = upload(paint(256, 256,
-                           [](int x, int y) {
-                               float g = hash01(uint32_t(x * 5471 + y * 9133));
-                               float v = 20 + (g > .82f ? (g - .82f) * 160 : 0) + fbm(x / 32.0f, y / 32.0f, 8, 3, 3) * 10;
-                               return SDL_Color{u8(v), u8(v), u8(v + 2), 255};
-                           }),
-                     SDL_BLENDMODE_BLEND);
+    // Highway surfaces are painted when first shown (see board()): a dozen of
+    // them at start-up would cost the console over a second.
     // Flames: a tapering tongue whose edge is torn by noise that scrolls up
     // through the frames. The noise tiles vertically over the whole cycle, so
     // the last frame runs straight back into the first.
@@ -876,9 +1075,14 @@ void createAll() {
                       SDL_BLENDMODE_ADD);
     // Gem textures are uploaded on first use (see gem()); only start rendering.
     gem3d::start();
+    bakeReceptors();
+}
+void bakeReceptors() {
     for (size_t i = 0; i < receptorTex.size(); ++i)
-        for (int pressed = 0; pressed < 2; ++pressed)
+        for (int pressed = 0; pressed < 2; ++pressed) {
+            SDL_DestroyTexture(receptorTex[i][pressed]);
             receptorTex[i][pressed] = bakeTarget([&] { bakeReceptor(lanes[i], pressed); });
+        }
 }
 void blit(SDL_Texture *t, float x, float y, float w, float h, SDL_Color c = {255, 255, 255, 255}) {
     if (!t)
@@ -934,6 +1138,22 @@ bool checkGems(std::string &problem) {
         }
     }
     return true;
+}
+void setPalette(size_t index) {
+    static size_t current = 0;
+    index = std::min(index, palettes().size() - 1);
+    if (index == current)
+        return;
+    current = index;
+    lanes = palettes()[index].lanes;
+    // Gems recolour on their next draw from the baked renders; the star power
+    // colour does not change. Fret buttons are baked again now.
+    for (size_t color = 0; color < gemTex.size(); ++color)
+        if (color != PowerColor)
+            for (auto *&t : gemTex[color])
+                SDL_DestroyTexture(t), t = nullptr;
+    if (renderer && receptorTex[0][0])
+        bakeReceptors();
 }
 void init(SDL_Renderer *r) {
     renderer = r;
@@ -1370,8 +1590,11 @@ void receptor(size_t lane, float x, float y, float w, bool pressed, bool power, 
         glow(x, y, w * 1.7f, w * .7f, alpha(c, .9f * hitFlash));
     }
 }
-void gripTape(const std::array<SDL_FPoint, 4> &p, float v0, float v1, SDL_Color tint) {
-    geometry(gripTex,
+void board(Board surface, const std::array<SDL_FPoint, 4> &p, float v0, float v1, SDL_Color tint) {
+    auto &texture = boardTex[size_t(std::clamp(int(surface), 0, BoardCount - 1))];
+    if (!texture)
+        texture = upload(paintBoard(surface), SDL_BLENDMODE_BLEND);
+    geometry(texture,
              {{p[0], tint, {0, v0}}, {p[1], tint, {1, v0}}, {p[2], tint, {1, v1}}, {p[3], tint, {0, v1}}},
              {0, 1, 2, 0, 2, 3});
 }

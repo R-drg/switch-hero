@@ -101,6 +101,8 @@ struct Settings {
     std::string lastSong;
     // A lang::Language, or -1 until the player picks one on first start.
     int language = -1;
+    // Indexes into highwayThemes and look::palettes().
+    int highway = 0, palette = 0;
     void load(const fs::path &path) {
         std::ifstream f(path);
         std::string line;
@@ -124,6 +126,10 @@ struct Settings {
                 continue;
             if (k == "language")
                 language = whole(v, 0, lang::Count - 1);
+            if (k == "highway")
+                highway = whole(v, 0, 99); // clamped to the real lists after loading
+            if (k == "palette")
+                palette = whole(v, 0, 99);
             if (k == "lefty")
                 lefty = v != 0;
             if (k == "timing_overlay")
@@ -170,7 +176,7 @@ struct Settings {
           << gamepad << "\nwii_guitar " << wiiGuitar << "\nno_fail " << noFail << "\npart " << part
           << "\ndifficulty " << difficulty << "\nlefty " << lefty << "\ntiming_overlay " << timingOverlay
           << "\nsort_mode " << sortMode << "\nhit_window " << hitWindow << "\nmusic_volume " << musicVolume
-          << "\nsfx_volume " << sfxVolume << '\n';
+          << "\nsfx_volume " << sfxVolume << "\nhighway " << highway << "\npalette " << palette << '\n';
         if (language >= 0)
             f << "language " << language << '\n';
         if (!lastSong.empty())
@@ -487,6 +493,72 @@ float decay(double age, double life) {
     return t * t;
 }
 
+// Highway looks the player can pick. Everything but the gems and fret buttons,
+// which follow the note colour palette instead.
+struct HighwayTheme {
+    const char *name; // English; translated for display
+    look::Board surface;
+    SDL_Color surfaceNear, surfaceFar; // multiplied over the surface texture
+    SDL_Color laneLine, beatLine;      // beat lines take their alpha from depth
+    float beatWidth;
+    SDL_Color railHot, railFar, haze, strike;
+    int effects = 0; // HighwayEffect flags
+};
+enum HighwayEffect {
+    Strings = 1,   // lane lines drawn as guitar strings
+    Inlays = 2,    // pearl dots every four beats
+    Sun = 4,       // a striped retro sun on the horizon
+    Glow = 8,      // neon lane and beat lines
+    Hazard = 16,   // rails painted in scrolling stripes of railHot and railFar
+    Embers = 32,   // sparks drifting up the board
+    Lightning = 64, // the odd bolt striking down the board
+    Bold = 128      // beat lines strong enough to read on a busy surface
+};
+const std::array<HighwayTheme, 13> highwayThemes = {
+    HighwayTheme{"GRIP TAPE", look::Board::GripTape, {255, 255, 255, 255}, {255, 255, 255, 255}, {120, 130, 150, 40},
+                 {150, 160, 180, 255}, 1, {228, 230, 240, 255}, {62, 66, 78, 255}, {7, 8, 11, 255}, {255, 170, 70, 255}},
+    // A guitar neck: rosewood, nickel frets on the beats, strings between the
+    // lanes, pearl inlays and bone binding.
+    HighwayTheme{"ROSEWOOD", look::Board::Rosewood, {255, 255, 255, 255}, {200, 190, 180, 255}, {210, 206, 196, 70},
+                 {214, 216, 224, 255}, 3, {238, 228, 204, 255}, {92, 80, 64, 255}, {10, 6, 5, 255}, {255, 190, 110, 255},
+                 Strings | Inlays},
+    HighwayTheme{"SYNTHWAVE", look::Board::Synthwave, {255, 255, 255, 255}, {255, 200, 255, 255}, {255, 60, 210, 120},
+                 {60, 225, 255, 255}, 2, {255, 70, 210, 255}, {70, 20, 90, 255}, {12, 4, 22, 255}, {255, 80, 210, 255},
+                 Sun | Glow},
+    // Tinted down from the texture's near-white, so the lines and gems still
+    // stand out against it.
+    HighwayTheme{"PASTEL DREAM", look::Board::Pastel, {226, 212, 238, 255}, {188, 172, 216, 255}, {150, 118, 196, 130},
+                 {236, 128, 184, 255}, 2, {255, 214, 234, 255}, {150, 130, 176, 255}, {34, 26, 46, 255},
+                 {255, 176, 214, 255}},
+    HighwayTheme{"HELLFIRE", look::Board::Hellfire, {255, 255, 255, 255}, {170, 120, 110, 255}, {255, 90, 20, 70},
+                 {255, 120, 30, 255}, 2, {255, 90, 10, 255}, {70, 10, 4, 255}, {20, 4, 2, 255}, {255, 110, 20, 255},
+                 Glow | Embers},
+    HighwayTheme{"DIAMOND PLATE", look::Board::DiamondPlate, {255, 255, 255, 255}, {170, 174, 186, 255},
+                 {20, 20, 24, 110}, {30, 30, 34, 255}, 3, {255, 206, 0, 255}, {24, 24, 26, 255}, {8, 8, 10, 255},
+                 {255, 206, 60, 255}, Hazard | Bold},
+    HighwayTheme{"CARBON FIBER", look::Board::CarbonFiber, {255, 255, 255, 255}, {190, 190, 200, 255},
+                 {220, 30, 40, 90}, {230, 36, 46, 255}, 2, {240, 36, 44, 255}, {60, 8, 10, 255}, {6, 6, 8, 255},
+                 {255, 60, 60, 255}, Bold},
+    HighwayTheme{"THUNDERSTORM", look::Board::Thunderstorm, {255, 255, 255, 255}, {170, 180, 210, 255},
+                 {120, 190, 255, 90}, {140, 210, 255, 255}, 2, {170, 220, 255, 255}, {30, 40, 70, 255}, {6, 8, 16, 255},
+                 {150, 210, 255, 255}, Glow | Lightning},
+    HighwayTheme{"TOXIC WASTE", look::Board::ToxicWaste, {170, 190, 160, 255}, {120, 150, 110, 255},
+                 {110, 255, 40, 90}, {150, 255, 60, 255}, 2, {230, 255, 0, 255}, {20, 20, 16, 255}, {4, 12, 4, 255},
+                 {140, 255, 40, 255}, Glow | Hazard},
+    HighwayTheme{"ZEBRA", look::Board::Zebra, {196, 196, 196, 255}, {140, 140, 140, 255}, {255, 40, 150, 110},
+                 {255, 40, 150, 255}, 2, {255, 60, 170, 255}, {40, 10, 30, 255}, {6, 6, 6, 255}, {255, 80, 180, 255},
+                 Bold},
+    HighwayTheme{"CHECKERBOARD", look::Board::Checkerboard, {255, 255, 255, 255}, {160, 160, 160, 255},
+                 {230, 20, 30, 110}, {230, 20, 30, 255}, 2, {240, 240, 236, 255}, {16, 16, 18, 255}, {6, 6, 7, 255},
+                 {255, 60, 60, 255}, Hazard | Bold},
+    HighwayTheme{"NEBULA", look::Board::Nebula, {255, 255, 255, 255}, {200, 190, 255, 255}, {170, 120, 255, 90},
+                 {120, 200, 255, 255}, 2, {200, 150, 255, 255}, {40, 20, 70, 255}, {4, 3, 10, 255}, {180, 130, 255, 255},
+                 Glow},
+    HighwayTheme{"FROSTBITE", look::Board::Frostbite, {196, 210, 226, 255}, {130, 156, 186, 255}, {255, 255, 255, 110},
+                 {220, 245, 255, 255}, 2, {236, 250, 255, 255}, {60, 100, 140, 255}, {4, 10, 20, 255},
+                 {160, 230, 255, 255}, Glow},
+};
+
 // The highway: a strip of grip tape running off into the dark, chrome rails with
 // a flame job at the near end, and bolted fret buttons on the player's edge.
 void highway(const Song &song, const Session &session, const Settings &settings, double time, uint8_t held,
@@ -518,9 +590,35 @@ void highway(const Song &song, const Session &session, const Settings &settings,
     auto corners = [&](float y0, float y1) {
         return std::array<SDL_FPoint, 4>{SDL_FPoint{xx(0, y0), y0}, {xx(5, y0), y0}, {xx(5, y1), y1}, {xx(0, y1), y1}};
     };
-    const SDL_Color surfaceTint = power ? SDL_Color{150, 200, 255, 255} : SDL_Color{255, 255, 255, 255};
+    const HighwayTheme &theme = highwayThemes[size_t(std::clamp(settings.highway, 0, int(highwayThemes.size()) - 1))];
+    if (theme.effects & Sun) {
+        // Behind the board: the board's far end sits across the sun's lower half.
+        glow(640, top - 30, 900, 320, alpha({255, 60, 190, 255}, .35f));
+        // Set high enough that its striped lower part clears the horizon.
+        const float r = 104, cy = top - 58;
+        const int bands = 52;
+        for (int b = 0; b < bands; ++b) {
+            const float y0 = cy - r + 2 * r * b / bands, y1 = cy - r + 2 * r * (b + 1) / bands;
+            if (y0 >= top)
+                break; // behind the board from here
+            // Every fourth band below the middle is cut out, the cuts widening
+            // toward the horizon.
+            const float below = (y0 - cy) / r;
+            if (below > 0 && b % 4 == 3)
+                continue;
+            if (below > .5f && b % 4 == 2)
+                continue;
+            const float mid = (y0 + y1) / 2, half = std::sqrt(std::max(0.0f, r * r - (mid - cy) * (mid - cy)));
+            rect(640 - half, y0, half * 2, std::min(y1, top) - y0,
+                 mix({255, 220, 96, 255}, {255, 56, 170, 255}, float(b) / (bands - 1)));
+        }
+    }
+    auto surfaceTint = [&](float y) {
+        const SDL_Color c = mix(theme.surfaceFar, theme.surfaceNear, (y - top) / (edge - top));
+        return power ? mix(c, SDL_Color{150, 200, 255, 255}, .6f) : c;
+    };
 
-    // Grip tape surface, scrolling with the notes so the whole board moves as one.
+    // The surface scrolls with the notes, so the whole board moves as one.
     const float period = float(settings.travel) * .4f;
     const int strips = 30;
     for (int i = 0; i < strips; ++i) {
@@ -531,32 +629,66 @@ void highway(const Song &song, const Session &session, const Settings &settings,
             // Split the strip where the texture wraps; SDL cannot repeat UVs.
             float cut = std::clamp((v0 - base) / (v0 - v1), 0.0f, 1.0f);
             float ym = y0 + (y1 - y0) * cut;
-            gripTape(corners(y0, ym), v0 - base, 0, surfaceTint);
-            gripTape(corners(ym, y1), 1, v1 - base + 1, surfaceTint);
+            board(theme.surface, corners(y0, ym), v0 - base, 0, surfaceTint(y0));
+            board(theme.surface, corners(ym, y1), 1, v1 - base + 1, surfaceTint(ym));
         } else
-            gripTape(corners(y0, y1), v0 - base, v1 - base, surfaceTint);
+            board(theme.surface, corners(y0, y1), v0 - base, v1 - base, surfaceTint(y0));
     }
     // Lane separators and beat lines stop short of the fret buttons.
     const float fretZone = bottom - 54;
-    for (int lane = 1; lane < 5; ++lane)
-        thickLine(xx(float(lane), top), top, xx(float(lane), fretZone), fretZone, 1.5f, {120, 130, 150, 40});
     double firstBeat = std::max(0.0, std::floor(song.tickAt(time) / song.resolution));
+    const bool glowing = theme.effects & Glow;
+    const bool inlays = theme.effects & Inlays, strings = theme.effects & Strings;
     for (int i = 0; i < 48; ++i) {
-        float y = yy(song.seconds(Tick((firstBeat + i) * song.resolution)));
+        const double beat = firstBeat + i;
+        float y = yy(song.seconds(Tick(beat * song.resolution)));
         if (y < top)
             break;
+        // Pearl inlays sit between frets, every fourth one, as on a real neck.
+        if (inlays && int(beat) % 4 == 2) {
+            const float yi = yy(song.seconds(Tick((beat + .5) * song.resolution)));
+            if (yi > top && yi < fretZone) {
+                const float r = width(yi) * .022f, depth = (yi - top) / (bottom - top);
+                disc(640, yi, r, r * (.55f + .3f * depth), {244, 240, 232, 255}, {196, 190, 180, 255}, 24);
+            }
+        }
         if (y > fretZone)
             continue;
         float fade = (y - top) / (fretZone - top);
-        thickLine(xx(0, y), y, xx(5, y), y, 1 + fade, {150, 160, 180, Uint8(14 + 40 * fade)});
+        const float w = theme.beatWidth * (1 + fade);
+        if (glowing)
+            thickLine(xx(0, y), y, xx(5, y), y, w * 3, alpha(theme.beatLine, .04f + .1f * fade));
+        thickLine(xx(0, y), y, xx(5, y), y, w, alpha(theme.beatLine, float(14 + 40 * fade) / 255 * (theme.effects & (Inlays | Bold) ? 4 : 1)));
+        if (inlays) // a fret catches the light along its top edge
+            thickLine(xx(0, y), y - w * .4f, xx(5, y), y - w * .4f, w * .35f, {255, 255, 255, Uint8(40 + 90 * fade)});
     }
-    // Chrome side rails with a flame job painted on the near end.
+    for (int lane = 1; lane < 5; ++lane) {
+        if (glowing)
+            thickLine(xx(float(lane), top), top, xx(float(lane), fretZone), fretZone, 6, alpha(theme.laneLine, .25f));
+        thickLine(xx(float(lane), top), top, xx(float(lane), fretZone), fretZone, strings ? 2.0f : 1.5f,
+                  theme.laneLine);
+        if (strings) // wound strings: a bright core over the dark line
+            thickLine(xx(float(lane), top), top, xx(float(lane), fretZone), fretZone, .8f, {255, 250, 240, 110});
+    }
+    // Side rails: chrome with a flame job on the near end, or the theme's own.
     for (int side = 0; side < 2; ++side) {
         float lane = side ? 5.0f : 0.0f, dir = xx(lane, top) > 640 ? 1.0f : -1.0f;
-        SDL_Color hot = power ? ink::power : SDL_Color{228, 230, 240, 255};
-        SDL_Color far{62, 66, 78, 255};
-        quad({xx(lane, top), top}, {xx(lane, top) + dir * 4, top}, {xx(lane, edge) + dir * 13, edge},
-             {xx(lane, edge), edge}, far, mix(far, {20, 20, 26, 255}, .6f), mix(hot, {30, 32, 40, 255}, .45f), hot);
+        SDL_Color hot = power ? ink::power : theme.railHot;
+        SDL_Color far = theme.railFar;
+        if (theme.effects & Hazard) {
+            // Painted warning stripes, scrolling with the board.
+            const int segments = 48;
+            for (int k = 0; k < segments; ++k) {
+                const float ya = top + (edge - top) * k / segments, yb = top + (edge - top) * (k + 1) / segments;
+                const float oa = 4 + 9 * (ya - top) / (edge - top), ob = 4 + 9 * (yb - top) / (edge - top);
+                const double band = std::floor((time + zAt((ya + yb) / 2) * settings.travel) / (period * .25));
+                const bool lit = (int64_t(band) % 2 + 2) % 2 == 0;
+                const SDL_Color c = mix(lit ? hot : far, {0, 0, 0, 255}, .55f * (1 - (ya - top) / (edge - top)));
+                quad({xx(lane, ya), ya}, {xx(lane, ya) + dir * oa, ya}, {xx(lane, yb) + dir * ob, yb}, {xx(lane, yb), yb}, c);
+            }
+        } else
+            quad({xx(lane, top), top}, {xx(lane, top) + dir * 4, top}, {xx(lane, edge) + dir * 13, edge},
+                 {xx(lane, edge), edge}, far, mix(far, {20, 20, 26, 255}, .6f), mix(hot, {30, 32, 40, 255}, .45f), hot);
     }
     // Darken the very front so the fret buttons read against the board.
     quad({xx(0, fretZone), fretZone}, {xx(5, fretZone), fretZone}, {xx(5, edge), edge}, {xx(0, edge), edge},
@@ -696,7 +828,39 @@ void highway(const Song &song, const Session &session, const Settings &settings,
     {
         const float hazeTo = top + (bottom - top) * .34f;
         quad({xx(0, top), top}, {xx(5, top), top}, {xx(5, hazeTo), hazeTo}, {xx(0, hazeTo), hazeTo},
-             SDL_Color{7, 8, 11, 255}, SDL_Color{7, 8, 11, 255}, SDL_Color{7, 8, 11, 0}, SDL_Color{7, 8, 11, 0});
+             theme.haze, theme.haze, alpha(theme.haze, 0), alpha(theme.haze, 0));
+    }
+    if (theme.effects & Embers)
+        // Sparks rising off the board, each on its own slow loop.
+        for (int i = 0; i < 26; ++i) {
+            const double cycle = ui * (.25 + .2 * hash01(uint32_t(i) * 7919u)) + hash01(uint32_t(i) * 104729u);
+            const float life = float(cycle - std::floor(cycle));
+            const float y = bottom - life * (bottom - top) * .9f;
+            const float lane = hash01(uint32_t(i) * 31u + uint32_t(int64_t(std::floor(cycle)) * 977)) * 5;
+            const float x = xx(lane, y) + std::sin(float(ui) * 2 + float(i)) * 6;
+            const float fade = std::sin(life * 3.14159f);
+            glow(x, y, 18, 18, alpha({255, 130, 30, 255}, fade * .9f));
+            rect(x - 1, y - 1, 2, 2, alpha({255, 230, 160, 255}, fade));
+        }
+    if (theme.effects & Lightning) {
+        // Now and then a bolt forks down the board with a flash behind it.
+        const double every = 3.1;
+        const auto strike = uint32_t(int64_t(std::floor(ui / every)));
+        const double age = ui - std::floor(ui / every) * every;
+        if (hash01(strike * 2654435761u) > .35f && age < .24) {
+            const float fade = 1 - float(age / .24);
+            const auto c = corners(top, edge);
+            quad(c[0], c[1], c[2], c[3], alpha({180, 210, 255, 255}, .16f * fade));
+            float lane = .5f + hash01(strike * 97u) * 4, x0 = xx(lane, top), y0 = top;
+            for (uint32_t k = 1; k <= 10; ++k) {
+                const float y1 = top + (bottom - 60 - top) * float(k) / 10;
+                lane = std::clamp(lane + (hash01(strike * 131u + k) - .5f) * 1.3f, .2f, 4.8f);
+                const float x1 = xx(lane, y1);
+                thickLine(x0, y0, x1, y1, 8, alpha({110, 170, 255, 255}, .35f * fade));
+                thickLine(x0, y0, x1, y1, 2.4f, alpha({240, 248, 255, 255}, fade));
+                x0 = x1, y0 = y1;
+            }
+        }
     }
     // The strike line breathes with the beat, so the tempo is in the board
     // itself and not only in your ears.
@@ -704,7 +868,7 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         const double beats = song.tickAt(time) / song.resolution;
         const float pulse = std::pow(1 - float(beats - std::floor(beats)), 3.0f);
         glow(640, bottom, width(bottom) * 1.15f, 70,
-             alpha(power ? ink::power : SDL_Color{255, 170, 70, 255}, .08f + .16f * pulse));
+             alpha(power ? ink::power : theme.strike, .08f + .16f * pulse));
     }
     for (int l = 0; l < 5; ++l) {
         float x = xx(l + .5f, bottom);
@@ -713,7 +877,10 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         if (held & (1 << l))
             glow(x, bottom - 40, width(bottom) / 5 * 1.6f, 300, alpha(power ? ink::power : lanes[size_t(l)], .16f));
         receptor(size_t(l), x, bottom, 106, held & (1 << l), power, hitFlash[size_t(l)]);
-        auto label = body(16, alpha(lanes[size_t(l)], .85f));
+        // Dark palettes (obsidian, black bumblebee lanes) would hide the label.
+        const SDL_Color lc = lanes[size_t(l)];
+        const float luma = .3f * lc.r + .59f * lc.g + .11f * lc.b;
+        auto label = body(16, alpha(luma < 110 ? mix(lc, {255, 255, 255, 255}, .55f) : lc, .85f));
         label.align = Align::Center;
         text(x, edge + 2, bindingName(settings.wiiGuitar ? wiiGuitarBindings[l] : settings.bindings[l]), label);
     }
@@ -852,20 +1019,23 @@ void menu(float cx, float y, float spacing, const std::vector<std::string> &item
 
 // The options screens: a short list of categories, each opening its own page,
 // so every setting sits under a name that says what it is for.
-enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language };
+enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language, Highway, Palette };
 struct OptionRow {
     Opt id;
     int fret = 0;
     std::string label, value, help;
     bool adjust = false; // left/right changes it
     std::string glyph;   // the button to press, drawn before the value
+    std::string note;    // small print after the label
 };
-const std::array<std::pair<const char *, const char *>, 5> optionPages = {
+const std::array<std::pair<const char *, const char *>, 6> optionPages = {
     std::pair{"GAMEPLAY", "controller mode, no fail, note speed, lefty"},
     {"AUDIO", "music and sound effect volume"},
     {"AUDIO / VIDEO SYNC", "calibrate if notes feel early or late"},
     {"CONTROLS", "fret buttons and controller test"},
+    {"CUSTOMIZE", "highway and note colors"},
     {"LANGUAGE", "English or Portuguese"}};
+constexpr int CustomizePage = 4;
 std::vector<OptionRow> optionRows(int page, const Settings &s, bool confirmReset) {
     const std::string a = acceptGlyph(s.wiiGuitar);
     auto ms = [](double v) { return (v > 0 ? "+" : "") + std::to_string(int(v)) + " ms"; };
@@ -914,7 +1084,15 @@ std::vector<OptionRow> optionRows(int page, const Settings &s, bool confirmReset
                         tr("Fine-tune by hand in 5 ms steps. Positive draws notes later."), true});
         rows.push_back({Opt::TimingOverlay, 0, tr("Timing overlay"), tr(s.timingOverlay ? "ON" : "OFF"),
                         tr("Shows frame times and audio clock drift in the corner. For checking smoothness."), true});
-    } else if (page == 4) {
+    } else if (page == CustomizePage) {
+        auto of = [](int i, size_t n) { return std::to_string(i + 1) + " / " + std::to_string(n); };
+        rows.push_back({Opt::Highway, 0, tr("Highway"), tr(highwayThemes[size_t(s.highway)].name),
+                        tr("The board the notes run down. Frets, rails and the far end change with it."), true, "",
+                        of(s.highway, highwayThemes.size())});
+        rows.push_back({Opt::Palette, 0, tr("Note colors"), tr(look::palettes()[size_t(s.palette)].name),
+                        tr("Gems, fret buttons, sustains and flames. Star power stays blue."), true, "",
+                        of(s.palette, look::palettes().size())});
+    } else if (page == 5) {
         // Each language is shown in its own name, so a player who cannot read
         // the current one still recognises theirs.
         rows.push_back({Opt::Language, 0, tr("Language"),
@@ -1062,6 +1240,9 @@ int main(int argc, char **argv) {
         settings.load(config);
         // Until the player picks a language on first start, follow the system.
         lang::set(settings.language >= 0 ? lang::Language(settings.language) : systemLanguage());
+        settings.highway = std::clamp(settings.highway, 0, int(highwayThemes.size()) - 1);
+        settings.palette = std::clamp(settings.palette, 0, int(look::palettes().size()) - 1);
+        look::setPalette(size_t(settings.palette));
         // A big library takes a while to walk, so show progress instead of a
         // black screen. Metadata only: charts are parsed when a song is picked.
         // The song list is cached on the card (see library.hpp). The smoke
@@ -1155,6 +1336,7 @@ int main(int argc, char **argv) {
         if (smoke) {
             settings = Settings{};
             settings.language = int(lang::Language::English);
+            look::setPalette(0);
             lang::set(lang::Language::English);
             int index = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 6, 15, 0);
             if (index < 0)
@@ -1330,6 +1512,42 @@ int main(int argc, char **argv) {
             calibrationTrack.notes.push_back(n);
         }
         std::unique_ptr<Session> calibrationSession;
+        // The Customize page's live preview: a short chart played by itself on
+        // a highway drawn into a texture, so a theme or palette is seen moving.
+        Song previewSong;
+        previewSong.tempos = {{0, 120, 0}};
+        Track previewTrack;
+        {
+            struct Step {
+                double beat;
+                uint8_t mask;
+                double hold = 0; // beats
+                Kind kind = Kind::Strum;
+                bool star = false;
+            };
+            // A run up the neck, hammer-ons back down, a star phrase with a
+            // sustained chord, an open note, and a closing chord.
+            const Step steps[] = {{0, 1},         {.5, 2},   {1, 4},    {1.5, 8},    {2, 16},
+                                  {2.5, 8, 0, Kind::Hopo}, {3, 4, 0, Kind::Hopo},   {3.5, 2, 0, Kind::Hopo},
+                                  {4, 5, 1.2, Kind::Strum, true}, {5.5, 10, 0, Kind::Strum, true},
+                                  {6.5, 32},      {7, 24, .8}};
+            const int res = previewSong.resolution;
+            for (const auto &st : steps) {
+                Note n;
+                n.tick = Tick(st.beat * res), n.time = st.beat * .5, n.mask = st.mask, n.kind = st.kind;
+                n.phrase = st.star ? 0 : -1;
+                for (int l = 0; l < 6; ++l) {
+                    const bool held = (st.mask & (1 << l)) && st.hold > 0;
+                    n.end[size_t(l)] = n.time + (held ? st.hold * .5 : 0);
+                    n.endTick[size_t(l)] = n.tick + (held ? Tick(st.hold * res) : 0);
+                }
+                previewTrack.notes.push_back(n);
+            }
+            previewTrack.phrases = {{Tick(4 * res), Tick(6 * res)}};
+        }
+        std::unique_ptr<Session> previewSession;
+        double previewClock = 1e9;
+        SDL_Texture *previewTarget = nullptr;
         auto startCalibration = [&](bool video) {
             calibratingVideo = video;
             calibration = TapCalibration{};
@@ -1537,8 +1755,11 @@ int main(int argc, char **argv) {
                     }
                 if (event.type == SDL_QUIT)
                     running = false;
-                if (event.type == SDL_RENDER_TARGETS_RESET || event.type == SDL_RENDER_DEVICE_RESET)
+                if (event.type == SDL_RENDER_TARGETS_RESET || event.type == SDL_RENDER_DEVICE_RESET) {
                     look::rebuild();
+                    SDL_DestroyTexture(previewTarget); // made again on the next preview frame
+                    previewTarget = nullptr;
+                }
                 if (!smoke && event.type == SDL_WINDOWEVENT &&
                     event.window.event == SDL_WINDOWEVENT_FOCUS_LOST && screen == Screen::Playing) {
                     frozen = audio.position() - song->offset;
@@ -2121,6 +2342,24 @@ int main(int argc, char **argv) {
                             remapping = row.fret;
                         }
                         break;
+                    case Opt::Highway:
+                        if (delta || accept) {
+                            const int n = int(highwayThemes.size());
+                            settings.highway = (settings.highway + (delta < 0 ? n - 1 : 1)) % n;
+                            if (accept)
+                                audio.playSfx(Sfx::Toggle, .8f);
+                        }
+                        break;
+                    case Opt::Palette:
+                        if (delta || accept) {
+                            const int n = int(look::palettes().size());
+                            settings.palette = (settings.palette + (delta < 0 ? n - 1 : 1)) % n;
+                            look::setPalette(size_t(settings.palette));
+                            if (accept)
+                                audio.playSfx(Sfx::Toggle, .8f);
+                        }
+                        break;
+                    case Opt::Language:
                         if (delta || accept) {
                             settings.language =
                                 (std::max(0, settings.language) + (delta < 0 ? lang::Count - 1 : 1)) % lang::Count;
@@ -2147,6 +2386,7 @@ int main(int argc, char **argv) {
                             settings.part = kept.part, settings.difficulty = kept.difficulty;
                             settings.lastSong = kept.lastSong, settings.sortMode = kept.sortMode;
                             settings.language = kept.language;
+                            look::setPalette(size_t(settings.palette));
                             confirmReset = false;
                             message = goodNews = tr("Options reset to defaults");
                             audio.playSfx(Sfx::Select);
@@ -2811,10 +3051,12 @@ int main(int argc, char **argv) {
                      marker(26, {198, 200, 212, 255}, -3));
                 plate(60, 166, 1160, 462);
                 // A plate row: LED, name on the left, value on the right.
+                // `edge` is where the row ends: narrower beside the Customize preview.
                 auto optionRow = [&](float y, bool on, const std::string &label, const std::string &value,
-                                     const std::string &note, bool arrows, const std::string &glyph = "") {
+                                     const std::string &note, bool arrows, const std::string &glyph = "",
+                                     float edge = 1200) {
                     if (on) {
-                        rect(80, y - 10, 1120, 50, {0, 0, 0, 120});
+                        rect(80, y - 10, edge - 80, 50, {0, 0, 0, 120});
                         glow(98, y + 14, 34, 34, alpha(ink::acid, .8f));
                     }
                     look::disc(98, y + 14, 6, 6, on ? ink::acid : SDL_Color{44, 46, 54, 255},
@@ -2825,7 +3067,7 @@ int main(int argc, char **argv) {
                     auto v = marker(28, on ? ink::acid : SDL_Color{214, 216, 226, 255}, -1);
                     v.align = Align::Right;
                     // Arrows mark the values that left/right changes.
-                    const float right = arrows ? 1146 : 1180;
+                    const float right = edge - (arrows ? 54 : 20);
                     text(right, y - 5, value, v);
                     if (!glyph.empty())
                         hintButton(right - measure(value, Face::Marker, 28) - 40, y - 1, glyph, "");
@@ -2833,7 +3075,7 @@ int main(int argc, char **argv) {
                         auto arrow = body(22, on ? ink::acid : ink::faint);
                         arrow.align = Align::Center;
                         text(right - measure(value, Face::Marker, 28) - 24, y, "<", arrow);
-                        text(1170, y, ">", arrow);
+                        text(edge - 30, y, ">", arrow);
                     }
                 };
                 std::string help;
@@ -2848,12 +3090,52 @@ int main(int argc, char **argv) {
                 } else {
                     const auto rows = optionRows(optionsPage, settings, confirmReset);
                     const float spacing = rows.size() > 5 ? 56 : 70;
+                    const bool customizing = optionsPage == CustomizePage;
                     for (int i = 0; i < int(rows.size()); ++i) {
                         const auto &r = rows[size_t(i)];
                         const bool on = i == settingRow;
                         const bool waiting = r.id == Opt::Fret && remapping == r.fret;
-                        optionRow(192 + i * spacing, on, r.label, waiting ? tr("PRESS A BUTTON...") : r.value, "",
-                                  r.adjust, waiting ? "" : r.glyph);
+                        optionRow(192 + i * spacing, on, r.label, waiting ? tr("PRESS A BUTTON...") : r.value, r.note,
+                                  r.adjust, waiting ? "" : r.glyph, customizing ? 700 : 1200);
+                    }
+                    if (customizing && !diagnostics) {
+                        // Autoplay: frets go down as notes reach the line and stay
+                        // down through sustains; the chart restarts every loop.
+                        const double loop = 5.6, t = std::fmod(ui, loop) - 1.6;
+                        if (!previewSession || t < previewClock)
+                            previewSession = std::make_unique<Session>(previewSong, previewTrack);
+                        previewClock = t;
+                        uint8_t held = 0;
+                        bool open = false;
+                        for (const auto &n : previewTrack.notes) {
+                            if (std::abs(n.time - t) < .03) {
+                                open = open || n.mask == 32;
+                                held |= n.mask & 31;
+                            }
+                            for (int l = 0; l < 5; ++l)
+                                if ((n.mask & (1 << l)) && n.time <= t && t < n.end[size_t(l)])
+                                    held |= uint8_t(1 << l);
+                        }
+                        previewSession->update(t, held, false, open);
+                        if (!previewTarget)
+                            previewTarget = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                                                              SDL_TEXTUREACCESS_TARGET, W, H);
+                        if (previewTarget && SDL_SetRenderTarget(renderer, previewTarget) == 0) {
+                            SDL_SetRenderDrawColor(renderer, 10, 10, 14, 255);
+                            SDL_RenderClear(renderer);
+                            // Sustains are drawn while their head is within this of the line.
+                            const double keep = longestSustain;
+                            longestSustain = std::max(keep, 1.0);
+                            highway(previewSong, *previewSession, settings, t, held, ui);
+                            longestSustain = keep;
+                            SDL_SetRenderTarget(renderer, nullptr);
+                            // The board and fret buttons, cropped from the full frame.
+                            const SDL_Rect crop{300, 96, 680, 604};
+                            const float h = 370, w = h * crop.w / crop.h;
+                            const SDL_FRect dest{960 - w / 2, 184, w, h};
+                            rect(dest.x - 4, dest.y - 4, dest.w + 8, dest.h + 8, {0, 0, 0, 170});
+                            SDL_RenderCopyF(renderer, previewTarget, &crop, &dest);
+                        }
                     }
                     help = rows[size_t(std::clamp(settingRow, 0, int(rows.size()) - 1))].help;
                 }
@@ -3515,6 +3797,10 @@ int main(int argc, char **argv) {
             SDL_JoystickClose(virtualPad);
         controller.close();
         SDL_DestroyTexture(albumArt);
+        if (previewTarget)
+            SDL_DestroyTexture(previewTarget);
+        if (downloadArt)
+            SDL_DestroyTexture(downloadArt);
         for (auto *t : retired)
             SDL_DestroyTexture(t);
         look::shutdown();

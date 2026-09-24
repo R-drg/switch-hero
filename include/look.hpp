@@ -19,8 +19,18 @@ const SDL_Color white = {236, 236, 240, 255}, dim = {150, 150, 162, 255}, faint 
                 marker = {18, 18, 22, 255}, chrome = {250, 250, 255, 255}, steel = {120, 124, 136, 255},
                 power = {90, 200, 255, 255};
 }
-// Fret lane colours (green, red, yellow, blue, orange, open).
-extern const std::array<SDL_Color, 6> lanes;
+// Fret lane colours (green, red, yellow, blue, orange, open) of the palette
+// in use. setPalette() changes them.
+extern std::array<SDL_Color, 6> lanes;
+// Note colour palettes the player can pick from. The name is English and is
+// translated for display.
+struct Palette {
+    const char *name;
+    std::array<SDL_Color, 6> lanes;
+};
+const std::vector<Palette> &palettes();
+// Recolours the gems, fret buttons, sustains and flames. Call on the main thread.
+void setPalette(size_t index);
 
 void init(SDL_Renderer *r);
 void rebuild(); // after SDL_RENDER_DEVICE_RESET / SDL_RENDER_TARGETS_RESET
@@ -105,7 +115,15 @@ void bakeGems(const std::string &path);
 bool checkGems(std::string &problem);
 // `hitFlash` runs 1 to 0 just after a note is hit on this fret.
 void receptor(size_t lane, float x, float y, float w, bool pressed, bool power, float hitFlash = 0);
-void gripTape(const std::array<SDL_FPoint, 4> &corners, float v0, float v1, SDL_Color tint);
+// Highway surfaces. Each tiles along the board, so it scrolls with the notes.
+enum class Board {
+    GripTape, Rosewood, Synthwave, Pastel, Hellfire, DiamondPlate, CarbonFiber, Thunderstorm, ToxicWaste, Zebra,
+    Checkerboard, Nebula, Frostbite
+};
+constexpr int BoardCount = 13;
+// One strip of highway surface: corners clockwise from the far left, texture
+// rows v0 to v1 (0 to 1), multiplied by tint.
+void board(Board surface, const std::array<SDL_FPoint, 4> &corners, float v0, float v1, SDL_Color tint);
 struct Fire {
     float x;
     int lane;
