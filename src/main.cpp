@@ -4,6 +4,7 @@
 #include "downloader.hpp"
 #include "game.hpp"
 #include "guitar_input.hpp"
+#include "lang.hpp"
 #include "look.hpp"
 #include "scores.hpp"
 #include <SDL.h>
@@ -30,6 +31,7 @@
 
 using namespace fret;
 using namespace fret::look;
+using fret::lang::tr;
 namespace {
 using look::Align;
 using look::Face;
@@ -57,12 +59,12 @@ Style body(float size, SDL_Color c = ink::white) {
     s.face = Face::Body, s.size = size, s.top = s.bottom = c;
     return s;
 }
-// 1234567 -> "1,234,567"
+// 1234567 -> "1,234,567" ("1.234.567" in Portuguese)
 std::string grouped(int n) {
     std::string digits = std::to_string(std::abs(n)), out;
     for (size_t i = 0; i < digits.size(); ++i) {
         if (i && (digits.size() - i) % 3 == 0)
-            out += ',';
+            out += lang::portuguese() ? '.' : ',';
         out += digits[i];
     }
     return (n < 0 ? "-" : "") + out;
@@ -95,6 +97,8 @@ struct Settings {
     // the folder of the last song, so the list opens where it was left.
     int part = 0, difficulty = 3;
     std::string lastSong;
+    // A lang::Language, or -1 until the player picks one on first start.
+    int language = -1;
     void load(const fs::path &path) {
         std::ifstream f(path);
         std::string line;
@@ -116,6 +120,8 @@ struct Settings {
             double v;
             if (!(in >> v) || !std::isfinite(v))
                 continue;
+            if (k == "language")
+                language = whole(v, 0, lang::Count - 1);
             if (k == "lefty")
                 lefty = v != 0;
             if (k == "timing_overlay")
@@ -163,6 +169,8 @@ struct Settings {
           << "\ndifficulty " << difficulty << "\nlefty " << lefty << "\ntiming_overlay " << timingOverlay
           << "\nsort_mode " << sortMode << "\nhit_window " << hitWindow << "\nmusic_volume " << musicVolume
           << "\nsfx_volume " << sfxVolume << '\n';
+        if (language >= 0)
+            f << "language " << language << '\n';
         if (!lastSong.empty())
             f << "last_song " << lastSong << '\n';
         for (int i = 0; i < 5; ++i)
@@ -323,7 +331,7 @@ class Controller {
 #else
         connect();
         p.standard = pad != nullptr;
-        p.name = pad ? SDL_GameControllerName(pad) : "no controller";
+        p.name = pad ? SDL_GameControllerName(pad) : tr("no controller");
         for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; ++b)
             if (pad && SDL_GameControllerGetButton(pad, SDL_GameControllerButton(b)))
                 p.standardRaw |= bit(b);
@@ -689,7 +697,7 @@ void loadingScreen(const std::string &label, float progress, int count, double u
     burnedCd(640, 356, 104, ui);
     auto note = marker(28, {206, 208, 218, 255}, -2);
     note.align = Align::Center;
-    text(640, 470, count > 0 ? "found " + std::to_string(count) + (count == 1 ? " song" : " songs") : "reading your sd card",
+    text(640, 470, count > 0 ? tr(count == 1 ? "found {} song" : "found {} songs", count) : tr("reading your sd card"),
          note);
     auto name = body(19, ink::faint);
     name.align = Align::Center, name.maxWidth = 760;
@@ -746,6 +754,11 @@ int nearestDifficulty(const Song &song, const std::string &instrument, int want)
                 return d;
     return want;
 }
+// The one-letter difficulty tags, easy to expert, in the current language.
+const char *const *difficultyLetters() {
+    static const char *const english[] = {"E", "M", "H", "X"}, *const portuguese[] = {"F", "M", "D", "X"};
+    return lang::portuguese() ? portuguese : english;
+}
 // Guitar frets as hint glyphs ("#0" green to "#4" orange). They draw as a
 // fret-coloured button rather than a word, which is how a guitar player reads them.
 std::string fretGlyph(int lane) { return "#" + std::to_string(lane); }
@@ -764,7 +777,7 @@ void bestLine(float x, float y, const Record &r, SDL_Color ink, float size = 15)
     for (int i = 0; i < 5; ++i)
         star(x + 7 + i * 16, y + size * .55f, 6.5f, 0, i < r.stars ? SDL_Color{255, 196, 40, 255} : SDL_Color{70, 70, 80, 255},
              {18, 18, 22, 255});
-    const std::string label = "BEST " + grouped(r.score);
+    const std::string label = tr("BEST {}", grouped(r.score));
     text(x + 88, y, label, body(size, ink));
     if (r.fullCombo)
         text(x + 88 + measure(label, Face::Body, size) + 12, y - 2, "FC", marker(size + 3, ::fret::look::ink::acid, -4));
@@ -802,7 +815,7 @@ void menu(float cx, float y, float spacing, const std::vector<std::string> &item
 
 // The options screens: a short list of categories, each opening its own page,
 // so every setting sits under a name that says what it is for.
-enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset };
+enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language };
 struct OptionRow {
     Opt id;
     int fret = 0;
@@ -810,71 +823,99 @@ struct OptionRow {
     bool adjust = false; // left/right changes it
     std::string glyph;   // the button to press, drawn before the value
 };
-const std::array<std::pair<const char *, const char *>, 4> optionPages = {
+const std::array<std::pair<const char *, const char *>, 5> optionPages = {
     std::pair{"GAMEPLAY", "controller mode, no fail, note speed, lefty"},
     {"AUDIO", "music and sound effect volume"},
     {"AUDIO / VIDEO SYNC", "calibrate if notes feel early or late"},
-    {"CONTROLS", "fret buttons and controller test"}};
+    {"CONTROLS", "fret buttons and controller test"},
+    {"LANGUAGE", "English or Portuguese"}};
 std::vector<OptionRow> optionRows(int page, const Settings &s, bool confirmReset) {
     const std::string a = acceptGlyph(s.wiiGuitar);
     auto ms = [](double v) { return (v > 0 ? "+" : "") + std::to_string(int(v)) + " ms"; };
     std::vector<OptionRow> rows;
     if (page == 0) {
-        rows.push_back({Opt::Mode, 0, "Controller mode",
-                        s.wiiGuitar ? "WII GUITAR" : s.gamepad ? "PRESS-TO-HIT" : "STRUM",
-                        s.wiiGuitar ? "Wii guitar over Bluetooth (needs the MissionControl patch). Fixed frets, strum bar strums."
-                        : s.gamepad ? "Press each fret as its note arrives. Best on Joy-Cons and the Pro Controller."
-                                    : "Hold the frets and strum with the D-pad. Hammer-ons and taps need no strum.",
+        rows.push_back({Opt::Mode, 0, tr("Controller mode"),
+                        tr(s.wiiGuitar ? "WII GUITAR" : s.gamepad ? "PRESS-TO-HIT" : "STRUM"),
+                        tr(s.wiiGuitar ? "Wii guitar over Bluetooth (needs the MissionControl patch). Fixed frets, strum bar strums."
+                           : s.gamepad ? "Press each fret as its note arrives. Best on Joy-Cons and the Pro Controller."
+                                       : "Hold the frets and strum with the D-pad. Hammer-ons and taps need no strum."),
                         true});
-        rows.push_back({Opt::NoFail, 0, "No fail", s.noFail ? "ON" : "OFF",
-                        s.noFail ? "The rock meter can never fail you. Good for learning a song."
-                                 : "Miss too much and the crowd boos you off stage.",
+        rows.push_back({Opt::NoFail, 0, tr("No fail"), tr(s.noFail ? "ON" : "OFF"),
+                        tr(s.noFail ? "The rock meter can never fail you. Good for learning a song."
+                                    : "Miss too much and the crowd boos you off stage."),
                         true});
         static const char *const windows[] = {"STRICT", "NORMAL", "LENIENT"};
         const int expertMs = int(std::round(Session::windowFor(3, s.hitWindow) * 1000));
         const int easyMs = int(std::round(Session::windowFor(0, s.hitWindow) * 1000));
-        rows.push_back({Opt::HitWindow, 0, "Hit window", windows[s.hitWindow],
-                        "How far off a note can be and still count: +-" + std::to_string(expertMs) + " ms on Expert, +-" +
-                            std::to_string(easyMs) + " ms on Easy.",
+        rows.push_back({Opt::HitWindow, 0, tr("Hit window"), tr(windows[s.hitWindow]),
+                        tr("How far off a note can be and still count: +-{} ms on Expert, +-{} ms on Easy.", expertMs,
+                           easyMs),
                         true});
         char speed[16];
         std::snprintf(speed, sizeof speed, "%.2fx", 1.2 / s.travel);
-        rows.push_back({Opt::Speed, 0, "Note speed", speed,
-                        "Faster notes spread out a busy chart. Each note is on screen for " +
-                            std::to_string(int(s.travel * 1000)) + " ms.",
+        rows.push_back({Opt::Speed, 0, tr("Note speed"), speed,
+                        tr("Faster notes spread out a busy chart. Each note is on screen for {} ms.",
+                           int(s.travel * 1000)),
                         true});
-        rows.push_back({Opt::Lefty, 0, "Lefty flip", s.lefty ? "ON" : "OFF",
-                        "Mirrors the highway so green is on the right, for left-handed players.", true});
+        rows.push_back({Opt::Lefty, 0, tr("Lefty flip"), tr(s.lefty ? "ON" : "OFF"),
+                        tr("Mirrors the highway so green is on the right, for left-handed players."), true});
     } else if (page == 1) {
         auto meter = [](int v) { return std::string(size_t(v), '|') + std::string(size_t(10 - v), '.'); };
-        rows.push_back({Opt::Music, 0, "Music volume", meter(s.musicVolume) + "  " + std::to_string(s.musicVolume * 10) + "%",
-                        "The song and its previews on the song list.", true});
-        rows.push_back({Opt::Effects, 0, "Sound effects volume",
+        rows.push_back({Opt::Music, 0, tr("Music volume"), meter(s.musicVolume) + "  " + std::to_string(s.musicVolume * 10) + "%",
+                        tr("The song and its previews on the song list."), true});
+        rows.push_back({Opt::Effects, 0, tr("Sound effects volume"),
                         meter(s.sfxVolume) + "  " + std::to_string(s.sfxVolume * 10) + "%",
-                        "Menu sounds, the count-in, misses and star power.", true});
+                        tr("Menu sounds, the count-in, misses and star power."), true});
     } else if (page == 2) {
-        rows.push_back({Opt::CalibrateAudio, 0, "Calibrate audio", "TO START",
-                        "Do this first. Tap along to a click track by ear to measure your audio delay.", false, a});
-        rows.push_back({Opt::AudioOffset, 0, "Audio / input offset", ms(s.audioMs),
-                        "Fine-tune by hand in 5 ms steps. Positive judges notes later.", true});
-        rows.push_back({Opt::CalibrateVideo, 0, "Calibrate video", "TO START",
-                        "Tap as silent notes cross the line to line the highway up with the music.", false, a});
-        rows.push_back({Opt::VideoOffset, 0, "Visual offset", ms(s.videoMs),
-                        "Fine-tune by hand in 5 ms steps. Positive draws notes later.", true});
-        rows.push_back({Opt::TimingOverlay, 0, "Timing overlay", s.timingOverlay ? "ON" : "OFF",
-                        "Shows frame times and audio clock drift in the corner. For checking smoothness.", true});
+        rows.push_back({Opt::CalibrateAudio, 0, tr("Calibrate audio"), tr("TO START"),
+                        tr("Do this first. Tap along to a click track by ear to measure your audio delay."), false, a});
+        rows.push_back({Opt::AudioOffset, 0, tr("Audio / input offset"), ms(s.audioMs),
+                        tr("Fine-tune by hand in 5 ms steps. Positive judges notes later."), true});
+        rows.push_back({Opt::CalibrateVideo, 0, tr("Calibrate video"), tr("TO START"),
+                        tr("Tap as silent notes cross the line to line the highway up with the music."), false, a});
+        rows.push_back({Opt::VideoOffset, 0, tr("Visual offset"), ms(s.videoMs),
+                        tr("Fine-tune by hand in 5 ms steps. Positive draws notes later."), true});
+        rows.push_back({Opt::TimingOverlay, 0, tr("Timing overlay"), tr(s.timingOverlay ? "ON" : "OFF"),
+                        tr("Shows frame times and audio clock drift in the corner. For checking smoothness."), true});
+    } else if (page == 4) {
+        // Each language is shown in its own name, so a player who cannot read
+        // the current one still recognises theirs.
+        rows.push_back({Opt::Language, 0, tr("Language"),
+                        lang::nativeName(lang::Language(std::max(0, s.language))),
+                        tr("Menus and messages. Song titles stay as they are."), true});
     } else {
         static const char *const names[] = {"Green fret", "Red fret", "Yellow fret", "Blue fret", "Orange fret"};
         for (int i = 0; i < 5; ++i)
-            rows.push_back({Opt::Fret, i, names[i],
+            rows.push_back({Opt::Fret, i, tr(names[i]),
                             bindingName(s.wiiGuitar ? wiiGuitarBindings[size_t(i)] : s.bindings[size_t(i)]),
-                            s.wiiGuitar ? "Fixed in Wii guitar mode." : "Press A, then the button or trigger to use."});
-        rows.push_back({Opt::Test, 0, "Controller test", "TO OPEN",
-                        "Shows every button the game sees. Use it when a fret or guitar is not responding.", false, a});
-        rows.push_back({Opt::Reset, 0, "Reset all options", confirmReset ? "AGAIN TO CONFIRM" : "",
-                        "Puts every option, offset and button back to its default.", false, confirmReset ? a : ""});
+                            tr(s.wiiGuitar ? "Fixed in Wii guitar mode." : "Press A, then the button or trigger to use.")});
+        rows.push_back({Opt::Test, 0, tr("Controller test"), tr("TO OPEN"),
+                        tr("Shows every button the game sees. Use it when a fret or guitar is not responding."), false, a});
+        rows.push_back({Opt::Reset, 0, tr("Reset all options"), confirmReset ? tr("AGAIN TO CONFIRM") : "",
+                        tr("Puts every option, offset and button back to its default."), false, confirmReset ? a : ""});
     }
     return rows;
+}
+// The console's (or desktop's) language, preselected on the first-start picker.
+lang::Language systemLanguage() {
+    lang::Language result = lang::Language::English;
+#ifdef __SWITCH__
+    if (R_SUCCEEDED(setInitialize())) {
+        u64 code = 0;
+        SetLanguage language;
+        if (R_SUCCEEDED(setGetSystemLanguage(&code)) && R_SUCCEEDED(setMakeLanguage(code, &language)) &&
+            (language == SetLanguage_PT || language == SetLanguage_PTBR))
+            result = lang::Language::Portuguese;
+        setExit();
+    }
+#else
+    if (SDL_Locale *locales = SDL_GetPreferredLocales()) {
+        if (locales[0].language && std::string(locales[0].language) == "pt")
+            result = lang::Language::Portuguese;
+        SDL_free(locales);
+    }
+#endif
+    return result;
 }
 } // namespace
 int main(int argc, char **argv) {
@@ -958,6 +999,10 @@ int main(int argc, char **argv) {
         SDL_RenderSetLogicalSize(renderer, W, H);
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
         look::init(renderer);
+        Settings settings;
+        settings.load(config);
+        // Until the player picks a language on first start, follow the system.
+        lang::set(settings.language >= 0 ? lang::Language(settings.language) : systemLanguage());
         // A big library takes a while to walk, so show progress instead of a
         // black screen. Metadata only: charts are parsed when a song is picked.
         auto scanLibrary = [&]() {
@@ -981,8 +1026,6 @@ int main(int argc, char **argv) {
             }
         };
         scanLibrary();
-        Settings settings;
-        settings.load(config);
         Scores scores;
         scores.load(scoresPath);
         // How the last finished run compared with the stored best.
@@ -996,6 +1039,8 @@ int main(int argc, char **argv) {
         SDL_Joystick *virtualPad = nullptr;
         if (smoke) {
             settings = Settings{};
+            settings.language = int(lang::Language::English);
+            lang::set(lang::Language::English);
             int index = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 6, 15, 0);
             if (index < 0)
                 throw std::runtime_error(SDL_GetError());
@@ -1019,8 +1064,10 @@ int main(int argc, char **argv) {
             settings.wiiGuitar = true;
         Audio audio;
         audio.start(); // interface sounds work from the song list onward
-        enum class Screen { Main, Library, Select, Playing, Paused, Countdown, Results, Settings, Calibrate, Download };
-        Screen screen = Screen::Main;
+        enum class Screen { Language, Main, Library, Select, Playing, Paused, Countdown, Results, Settings, Calibrate, Download };
+        // The first start asks for a language before anything else.
+        Screen screen = settings.language < 0 ? Screen::Language : Screen::Main;
+        int languageRow = int(lang::current());
         std::string callout;
         double calloutAt = -1;
         Screen previousScreen = Screen::Library;
@@ -1202,7 +1249,7 @@ int main(int argc, char **argv) {
         int ownedAt = -1;
         auto openSearch = [&]() {
 #ifdef __SWITCH__
-            if (askText("Song, artist or charter", query)) {
+            if (askText(tr("Song, artist or charter"), query)) {
                 downloader->search(query);
                 downloadRow = 0;
             }
@@ -1372,7 +1419,7 @@ int main(int argc, char **argv) {
                     frozen = audio.position() - song->offset;
                     audio.pause(true);
                     screen = Screen::Paused;
-                    message = "Controller disconnected";
+                    message = tr("Controller disconnected");
                 }
             }
             if (virtualPad && session && screen == Screen::Playing) {
@@ -1408,7 +1455,7 @@ int main(int argc, char **argv) {
                 frozen = audio.position() - song->offset;
                 audio.pause(true);
                 screen = Screen::Paused;
-                message = "Controller disconnected";
+                message = tr("Controller disconnected");
             }
             const auto *keys = SDL_GetKeyboardState(nullptr);
             auto key = [&](SDL_Scancode k) { return keys[k] && !previousKeys[k]; };
@@ -1424,13 +1471,13 @@ int main(int argc, char **argv) {
                 if (!escapeStart)
                     escapeStart = SDL_GetTicks64();
                 else if (SDL_GetTicks64() - escapeStart > 2000 && screen != Screen::Library &&
-                         screen != Screen::Main) {
+                         screen != Screen::Main && screen != Screen::Language) {
                     escapeStart = 0;
                     settings.wiiGuitar = false;
                     audio.stop();
                     audio.playSfx(Sfx::Back);
                     remapping = -1;
-                    message = goodNews = "Controller mode reset to press-to-hit";
+                    message = goodNews = tr("Controller mode reset to press-to-hit");
                     screen = Screen::Library;
                 }
             } else
@@ -1478,7 +1525,25 @@ int main(int argc, char **argv) {
                 message.clear();
                 screen = Screen::Settings;
             };
-            if (screen == Screen::Main) {
+            if (screen == Screen::Language) {
+                // Moving the cursor switches the language at once, so each
+                // choice previews itself. There is nothing to back out to.
+                if (up || down) {
+                    languageRow = (languageRow + lang::Count + (down ? 1 : -1)) % lang::Count;
+                    lang::set(lang::Language(languageRow));
+                    audio.playSfx(Sfx::Move);
+                }
+                if (accept) {
+                    settings.language = languageRow;
+                    try {
+                        settings.save(config);
+                    } catch (const std::exception &e) {
+                        SDL_Log("Switch Hero: %s", e.what());
+                    }
+                    audio.playSfx(Sfx::Select, .7f);
+                    screen = Screen::Main;
+                }
+            } else if (screen == Screen::Main) {
                 // Quickplay, download, options, quit.
                 if (up || down) {
                     mainRow = (mainRow + 4 + (down ? 1 : -1)) % 4;
@@ -1542,7 +1607,7 @@ int main(int argc, char **argv) {
                         selected = entries.empty() ? 0 : std::min(selected, entries.size() - 1);
                         ownedAt = -1; // the download list rechecks what is in the library
                         loadSelected();
-                        message = goodNews = "Deleted " + plainTitle(doomed.name);
+                        message = goodNews = tr("Deleted {}", plainTitle(doomed.name));
                         audio.playSfx(Sfx::Select, .7f);
                     } catch (const std::exception &e) {
                         loadSelected();
@@ -1597,13 +1662,13 @@ int main(int argc, char **argv) {
                             selected = target;
                             selectEntry();
                         }
-                        jumpLabel = groupOf(entries[selected]), jumpShownAt = now();
+                        jumpLabel = tr(groupOf(entries[selected])), jumpShownAt = now();
                         audio.playSfx(Sfx::Move);
                     }
                     if (press(settings.wiiGuitar ? 0 : 33) || key(SDL_SCANCODE_Z)) {
                         settings.sortMode = (settings.sortMode + 1) % 3;
                         sortEntries(); // the same song stays selected
-                        jumpLabel = sortNames[settings.sortMode], jumpShownAt = now();
+                        jumpLabel = tr(sortNames[settings.sortMode]), jumpShownAt = now();
                         audio.playSfx(Sfx::Toggle);
                     }
                     if (accept) {
@@ -1751,7 +1816,7 @@ int main(int argc, char **argv) {
                                     if (i != remapping && settings.bindings[i] == b)
                                         duplicate = true;
                                 if (duplicate)
-                                    message = "Already assigned to another fret";
+                                    message = tr("Already assigned to another fret");
                                 else {
                                     settings.bindings[remapping] = b;
                                     message.clear();
@@ -1860,6 +1925,14 @@ int main(int argc, char **argv) {
                             remapping = row.fret;
                         }
                         break;
+                        if (delta || accept) {
+                            settings.language =
+                                (std::max(0, settings.language) + (delta < 0 ? lang::Count - 1 : 1)) % lang::Count;
+                            lang::set(lang::Language(settings.language));
+                            if (accept)
+                                audio.playSfx(Sfx::Toggle, .8f);
+                        }
+                        break;
                     case Opt::Test:
                         if (accept) {
                             diagnostics = true;
@@ -1877,8 +1950,9 @@ int main(int argc, char **argv) {
                             settings = Settings{};
                             settings.part = kept.part, settings.difficulty = kept.difficulty;
                             settings.lastSong = kept.lastSong, settings.sortMode = kept.sortMode;
+                            settings.language = kept.language;
                             confirmReset = false;
-                            message = goodNews = "Options reset to defaults";
+                            message = goodNews = tr("Options reset to defaults");
                             audio.playSfx(Sfx::Select);
                         }
                         break;
@@ -1921,7 +1995,7 @@ int main(int argc, char **argv) {
                     // Shout out long streaks and star power, the moments worth celebrating.
                     if (session->combo / 50 > milestone) {
                         milestone = session->combo / 50;
-                        callout = std::to_string(milestone * 50) + " NOTE STREAK!";
+                        callout = tr("{} NOTE STREAK!", milestone * 50);
                         calloutAt = now();
                         audio.playSfx(Sfx::Streak);
                     } else if (session->combo < milestone * 50)
@@ -2179,7 +2253,26 @@ int main(int argc, char **argv) {
             }
             const std::string glyphAccept = acceptGlyph(settings.wiiGuitar), glyphBack = backGlyph(settings.wiiGuitar),
                               glyphAlt = altGlyph(settings.wiiGuitar);
-            if (screen == Screen::Main) {
+            if (screen == Screen::Language) {
+                wall(ui, ink::crt);
+                auto title = stencil(66, ink::chrome, {116, 122, 138, 255});
+                title.align = Align::Center, title.glow = alpha(ink::crt, .5f), title.glowSpread = 1.2f;
+                text(640, 70, "SWITCH", title);
+                auto burning = stencil(66, {255, 196, 60, 255}, {206, 26, 20, 255});
+                burning.align = Align::Center, burning.glow = alpha(ink::blood, .85f), burning.glowSpread = 1.25f;
+                text(654, 126, "HERO", burning);
+                auto head = stencil(44);
+                head.align = Align::Center;
+                text(640, 262, tr("CHOOSE YOUR LANGUAGE"), head);
+                std::vector<std::string> names;
+                for (int i = 0; i < lang::Count; ++i)
+                    names.push_back(lang::nativeName(lang::Language(i)));
+                menu(640, 390, 74, names, languageRow, ui, 420, 36);
+                auto sub = body(18, ink::dim);
+                sub.align = Align::Center;
+                text(640, 560, tr("you can change it later in options"), sub);
+                hints({{glyphAccept, tr("SELECT")}});
+            } else if (screen == Screen::Main) {
                 wall(ui, ink::crt);
                 auto title = stencil(112, ink::chrome, {116, 122, 138, 255});
                 title.glow = alpha(ink::crt, .55f), title.glowSpread = 1.2f;
@@ -2187,7 +2280,7 @@ int main(int argc, char **argv) {
                 auto burning = stencil(112, {255, 196, 60, 255}, {206, 26, 20, 255});
                 burning.glow = alpha(ink::blood, .85f), burning.glowSpread = 1.25f;
                 text(94, 134, "HERO", burning);
-                text(110, 246, "burned mixtape vol. 1", marker(30, {198, 200, 212, 255}, -3));
+                text(110, 246, tr("burned mixtape vol. 1"), marker(30, {198, 200, 212, 255}, -3));
                 text(560, 226, "\\m/", marker(38, {150, 152, 166, 255}, -14));
                 star(1210, 120, 18, 12, {255, 198, 44, 255}, {18, 18, 22, 255});
                 star(40, 560, 13, -8, {226, 32, 44, 255}, {18, 18, 22, 255});
@@ -2196,17 +2289,17 @@ int main(int argc, char **argv) {
                 {
                     auto s = marker(26, ink::marker, -3);
                     s.align = Align::Center;
-                    text(930, 592, std::to_string(entries.size()) + (entries.size() == 1 ? " SONG" : " SONGS"), s);
+                    text(930, 592, tr(entries.size() == 1 ? "{} SONG" : "{} SONGS", entries.size()), s);
                 }
-                menu(330, 364, 66, {"QUICKPLAY", "DOWNLOAD SONGS", "OPTIONS", "QUIT"}, mainRow, ui, 400, 32);
+                menu(330, 364, 66, {tr("QUICKPLAY"), tr("DOWNLOAD SONGS"), tr("OPTIONS"), tr("QUIT")}, mainRow, ui, 400, 32);
                 static const char *const blurbs[] = {"pick a song from your library", "grab charts from chorus encore",
                                                      "controls, calibration and gameplay", "back to the homebrew menu"};
                 auto blurb = body(18, ink::dim);
                 blurb.align = Align::Center;
-                text(330, 620, blurbs[mainRow], blurb);
+                text(330, 620, tr(blurbs[mainRow]), blurb);
                 if (!message.empty())
                     text(60, 644, message, marker(22, messageInk(), -1));
-                hints({{glyphAccept, "SELECT"}, {glyphBack, "QUIT"}});
+                hints({{glyphAccept, tr("SELECT")}, {glyphBack, tr("QUIT")}});
                 {
                     auto version = body(15, ink::faint);
                     version.align = Align::Right;
@@ -2215,11 +2308,11 @@ int main(int argc, char **argv) {
             } else if (screen == Screen::Select && song) {
                 wall(ui, ink::crt);
                 const bool askingPart = selectStep == 0;
-                text(58, 24, askingPart ? "SELECT INSTRUMENT" : "SELECT DIFFICULTY", stencil(60, ink::chrome, {116, 122, 138, 255}));
+                text(58, 24, tr(askingPart ? "SELECT INSTRUMENT" : "SELECT DIFFICULTY"), stencil(60, ink::chrome, {116, 122, 138, 255}));
                 {
                     auto sub = marker(26, {198, 200, 212, 255}, -2);
                     sub.maxWidth = 760;
-                    text(72, 104, plainTitle(song->name) + (askingPart || parts.size() < 2 ? "" : "  /  " + selectedPart()),
+                    text(72, 104, plainTitle(song->name) + (askingPart || parts.size() < 2 ? "" : "  /  " + tr(selectedPart())),
                          sub);
                 }
                 photo(albumArt, 250, 380, 250, -7 + hash01(uint32_t(selected) * 977) * 5);
@@ -2246,13 +2339,13 @@ int main(int argc, char **argv) {
                         text(664, cy - 20, label, stencil(32, live ? ink::chrome : SDL_Color{70, 72, 82, 255},
                                                           live ? ink::steel : SDL_Color{50, 52, 60, 255}));
                 };
-                static const char *const letters[] = {"E", "M", "H", "X"};
+                const char *const *letters = difficultyLetters();
                 if (askingPart) {
                     const float spacing = parts.size() > 4 ? 88 : 100;
                     for (int i = 0; i < int(parts.size()); ++i) {
                         const float cy = 214 + i * spacing;
                         const bool on = i == partRow;
-                        row(cy, on, true, parts[size_t(i)], i);
+                        row(cy, on, true, tr(parts[size_t(i)]), i);
                         for (int d = 0; d < 4; ++d) {
                             const bool has = findTrack(*song, parts[size_t(i)], d) >= 0;
                             const float lx = 1044 + d * 36;
@@ -2268,7 +2361,7 @@ int main(int argc, char **argv) {
                         const float cy = 222 + d * 108;
                         const int t = findTrack(*song, selectedPart(), d);
                         const bool on = d == diffRow, live = t >= 0;
-                        row(cy, on, live, difficultyName(d), d);
+                        row(cy, on, live, tr(difficultyName(d)), d);
                         for (int i = 0; i < 4; ++i)
                             star(1060 + i * 34, cy - (on ? 8 : 4), 13, float(i) * 7,
                                  !live ? SDL_Color{40, 40, 48, 255}
@@ -2279,8 +2372,8 @@ int main(int argc, char **argv) {
                                 bestLine(666, cy + 16, *best, on ? SDL_Color{50, 48, 56, 255} : ink::dim);
                         auto count = body(16, on ? SDL_Color{60, 58, 66, 255} : live ? ink::dim : ink::faint);
                         count.align = Align::Right;
-                        text(1150, cy + 12, live ? std::to_string(song->tracks[size_t(t)].notes.size()) + " notes"
-                                                 : "not charted",
+                        text(1150, cy + 12, live ? tr("{} notes", song->tracks[size_t(t)].notes.size())
+                                                 : std::string(tr("not charted")),
                              count);
                     }
                 }
@@ -2288,16 +2381,16 @@ int main(int argc, char **argv) {
                     tape(1150, 150, 170, 46, 7);
                     auto nf = marker(24, ink::marker, 7);
                     nf.align = Align::Center;
-                    text(1150, 134, "NO FAIL", nf);
+                    text(1150, 134, tr("NO FAIL"), nf);
                 }
                 if (!message.empty())
                     text(600, 640, message, marker(22, messageInk(), -1));
-                hints({{glyphAccept, askingPart ? "SELECT" : "PLAY"},
-                       {glyphBack, "BACK"},
-                       {settings.wiiGuitar ? fretGlyph(3) : "X", settings.noFail ? "NO FAIL: ON" : "NO FAIL: OFF"}});
+                hints({{glyphAccept, tr(askingPart ? "SELECT" : "PLAY")},
+                       {glyphBack, tr("BACK")},
+                       {settings.wiiGuitar ? fretGlyph(3) : "X", tr(settings.noFail ? "NO FAIL: ON" : "NO FAIL: OFF")}});
                 auto mode = body(16, ink::dim);
                 mode.align = Align::Right;
-                text(1222, 680, settings.wiiGuitar ? "wii guitar mode" : settings.gamepad ? "press-to-hit mode" : "strum mode",
+                text(1222, 680, tr(settings.wiiGuitar ? "wii guitar mode" : settings.gamepad ? "press-to-hit mode" : "strum mode"),
                      mode);
             } else if (screen == Screen::Library) {
                 wall(ui, ink::crt);
@@ -2309,7 +2402,7 @@ int main(int argc, char **argv) {
                     tape(690, 66, 230, 46, -2.5f);
                     auto by = marker(22, ink::marker, -2.5f);
                     by.align = Align::Center;
-                    text(690, 50, std::string("by ") + sortNames[settings.sortMode], by);
+                    text(690, 50, tr("by {}", tr(sortNames[settings.sortMode])), by);
                 }
                 star(1246, 186, 16, 12, {255, 198, 44, 255}, {18, 18, 22, 255});
                 star(28, 322, 13, -8, {226, 32, 44, 255}, {18, 18, 22, 255});
@@ -2317,21 +2410,21 @@ int main(int argc, char **argv) {
                 {
                     auto s = marker(26, ink::marker, 3.5f);
                     s.align = Align::Center;
-                    text(1128, 58, std::to_string(entries.size()) + (entries.size() == 1 ? " SONG" : " SONGS"), s);
+                    text(1128, 58, tr(entries.size() == 1 ? "{} SONG" : "{} SONGS", entries.size()), s);
                 }
                 if (entries.empty()) {
                     plate(230, 250, 820, 230);
-                    text(640, 285, "NO SONGS FOUND", [] { auto s = stencil(52); s.align = Align::Center; return s; }());
+                    text(640, 285, tr("NO SONGS FOUND"), [] { auto s = stencil(52); s.align = Align::Center; return s; }());
                     auto line1 = body(20, ink::dim);
                     line1.align = Align::Center;
-                    text(640, 360, "Copy extracted Clone Hero song folders into", line1);
+                    text(640, 360, tr("Copy extracted Clone Hero song folders into"), line1);
                     auto path = marker(24, ink::acid, -1);
                     path.align = Align::Center;
                     text(640, 395, root.string(), path);
-                    text(640, 440, "Each folder needs notes.chart or notes.mid plus audio", line1);
+                    text(640, 440, tr("Each folder needs notes.chart or notes.mid plus audio"), line1);
                     auto line2 = body(20, ink::white);
                     line2.align = Align::Center;
-                    text(640, 468, "or press + to download charts", line2);
+                    text(640, 468, tr("or press + to download charts"), line2);
                 } else {
                     const int rows = 6;
                     int first = std::clamp(int(selected) - rows / 2, 0, std::max(0, int(entries.size()) - rows));
@@ -2354,7 +2447,7 @@ int main(int argc, char **argv) {
                         text(cx - 286, cy - 36, plainTitle(entries[index].name), name);
                         auto sub = body(17, {58, 58, 64, 255});
                         sub.angle = angle, sub.maxWidth = 520;
-                        text(cx - 284, cy + 4, entries[index].error.empty() ? entries[index].artist : "UNSUPPORTED SONG", sub);
+                        text(cx - 284, cy + 4, entries[index].error.empty() ? entries[index].artist : tr("UNSUPPORTED SONG"), sub);
                         if (on) {
                             text(cx - 340, cy - 34, ">", marker(48, ink::acid, angle));
                             const float wobble = 1 + .04f * std::sin(float(ui) * 4);
@@ -2385,7 +2478,7 @@ int main(int argc, char **argv) {
                     if (!song && loadInFlight()) {
                         plate(812, 520, 350, 108);
                         const int dots = int(std::fmod(ui * 3, 4.0));
-                        text(838, 560, "reading chart" + std::string(size_t(dots), '.'), body(18, ink::dim));
+                        text(838, 560, tr("reading chart") + std::string(size_t(dots), '.'), body(18, ink::dim));
                     }
                     if (song) {
                         // What the chart offers: each part with its difficulties,
@@ -2395,10 +2488,10 @@ int main(int argc, char **argv) {
                         const float plateH = 100 + shownParts * 38;
                         plate(812, 628 - plateH, 350, plateH);
                         float py = 628 - plateH + 24;
-                        static const char *const letters[] = {"E", "M", "H", "X"};
+                        const char *const *letters = difficultyLetters();
                         for (int i = 0; i < shownParts; ++i, py += 38) {
                             const auto &part = songPartList[size_t(i)];
-                            text(838, py, part, stencil(22));
+                            text(838, py, tr(part), stencil(22));
                             for (int d = 0; d < 4; ++d) {
                                 const bool has = findTrack(*song, part, d) >= 0;
                                 const float lx = 1010 + d * 34;
@@ -2410,15 +2503,15 @@ int main(int argc, char **argv) {
                             }
                         }
                         if (int(songPartList.size()) > shownParts)
-                            text(838, py - 6, "+ " + std::to_string(songPartList.size() - size_t(shownParts)) + " more",
+                            text(838, py - 6, tr("+ {} more", songPartList.size() - size_t(shownParts)),
                                  body(15, ink::dim));
-                        text(838, py + 2, timeText(song->duration) + "   " + std::to_string(song->audio.size()) +
-                                              (song->audio.size() == 1 ? " STEM" : " STEMS"),
+                        text(838, py + 2, timeText(song->duration) + "   " +
+                                              tr(song->audio.size() == 1 ? "{} STEM" : "{} STEMS", song->audio.size()),
                              body(17, ink::dim));
                         if (!song->warnings.empty()) {
                             auto w = body(14, ink::blood);
                             w.align = Align::Right;
-                            text(1140, py + 4, "chart warnings", w);
+                            text(1140, py + 4, tr("chart warnings"), w);
                         }
                         // The best on the part and difficulty the setup screen will open on.
                         std::string part = songPartList.front();
@@ -2429,7 +2522,8 @@ int main(int argc, char **argv) {
                         if (const auto *best = scores.find(song->folder.filename().string(), part, diff))
                             bestLine(838, py + 32, *best, ink::white, 16);
                         else
-                            text(838, py + 32, "not played on " + part + " " + difficultyName(diff), body(16, ink::faint));
+                            text(838, py + 32, tr("not played on {} {}", tr(part), tr(difficultyName(diff))),
+                                 body(16, ink::faint));
                     }
                 }
                 if (!message.empty())
@@ -2449,31 +2543,31 @@ int main(int argc, char **argv) {
                     plate(290, 150, 700, 420);
                     auto head = stencil(46, ink::chrome, {116, 122, 138, 255});
                     head.align = Align::Center, head.glow = alpha(ink::blood, .8f), head.glowSpread = 1.2f;
-                    text(640, 176, "DELETE SONG?", head);
+                    text(640, 176, tr("DELETE SONG?"), head);
                     tape(640, 276, 560, 58, -1.2f);
                     auto name = marker(28, ink::marker, -1.2f);
                     name.align = Align::Center, name.maxWidth = 500;
                     text(640, 258, plainTitle(entries[selected].name), name);
                     auto line = body(18, ink::dim);
                     line.align = Align::Center, line.maxWidth = 620;
-                    text(640, 322, "Removes this folder and everything in it from the SD card.", line);
-                    text(640, 348, "This can't be undone.", line);
+                    text(640, 322, tr("Removes this folder and everything in it from the SD card."), line);
+                    text(640, 348, tr("This can't be undone."), line);
                     auto path = body(15, ink::faint);
                     path.align = Align::Center, path.maxWidth = 620;
                     text(640, 378, entries[selected].folder.filename().string(), path);
-                    menu(640, 448, 62, {"KEEP IT", "DELETE"}, deleteRow, ui, 360, 30);
-                    hints({{glyphAccept, "CONFIRM"}, {glyphBack, "CANCEL"}});
+                    menu(640, 448, 62, {tr("KEEP IT"), tr("DELETE")}, deleteRow, ui, 360, 30);
+                    hints({{glyphAccept, tr("CONFIRM")}, {glyphBack, tr("CANCEL")}});
                 } else
-                    hints({{glyphAccept, "SELECT SONG"},
-                           {glyphBack, "BACK"},
-                           {glyphAlt, "OPTIONS"},
-                           {"+", "DOWNLOAD"},
-                           {settings.wiiGuitar ? fretGlyph(3) : "X", "DELETE"},
-                           {settings.wiiGuitar ? fretGlyph(4) : "ZR", "SORT"}});
+                    hints({{glyphAccept, tr("SELECT SONG")},
+                           {glyphBack, tr("BACK")},
+                           {glyphAlt, tr("OPTIONS")},
+                           {"+", tr("DOWNLOAD")},
+                           {settings.wiiGuitar ? fretGlyph(3) : "X", tr("DELETE")},
+                           {settings.wiiGuitar ? fretGlyph(4) : "ZR", tr("SORT")}});
             } else if (screen == Screen::Settings) {
                 wall(ui, ink::crt);
-                text(58, 24, "OPTIONS", stencil(78, ink::chrome, {116, 122, 138, 255}));
-                text(72, 118, optionsPage < 0 ? "tune your rig" : optionPages[size_t(optionsPage)].first,
+                text(58, 24, tr("OPTIONS"), stencil(78, ink::chrome, {116, 122, 138, 255}));
+                text(72, 118, tr(optionsPage < 0 ? "tune your rig" : optionPages[size_t(optionsPage)].first),
                      marker(26, {198, 200, 212, 255}, -3));
                 plate(60, 166, 1160, 462);
                 // A plate row: LED, name on the left, value on the right.
@@ -2506,11 +2600,11 @@ int main(int argc, char **argv) {
                 if (optionsPage < 0) {
                     for (int i = 0; i <= int(optionPages.size()); ++i) {
                         const bool back = i == int(optionPages.size());
-                        optionRow(200 + i * 64, i == optionsTop, back ? "BACK" : optionPages[size_t(i)].first, "",
-                                  back ? "" : optionPages[size_t(i)].second, false);
+                        optionRow(196 + i * 54, i == optionsTop, tr(back ? "BACK" : optionPages[size_t(i)].first), "",
+                                  back ? "" : tr(optionPages[size_t(i)].second), false);
                     }
-                    help = optionsTop < int(optionPages.size()) ? "Options save when you leave this screen."
-                                                                : "Save and go back.";
+                    help = tr(optionsTop < int(optionPages.size()) ? "Options save when you leave this screen."
+                                                                   : "Save and go back.");
                 } else {
                     const auto rows = optionRows(optionsPage, settings, confirmReset);
                     const float spacing = rows.size() > 5 ? 56 : 70;
@@ -2518,13 +2612,13 @@ int main(int argc, char **argv) {
                         const auto &r = rows[size_t(i)];
                         const bool on = i == settingRow;
                         const bool waiting = r.id == Opt::Fret && remapping == r.fret;
-                        optionRow(192 + i * spacing, on, r.label, waiting ? "PRESS A BUTTON..." : r.value, "",
+                        optionRow(192 + i * spacing, on, r.label, waiting ? tr("PRESS A BUTTON...") : r.value, "",
                                   r.adjust, waiting ? "" : r.glyph);
                     }
                     help = rows[size_t(std::clamp(settingRow, 0, int(rows.size()) - 1))].help;
                 }
                 if (remapping >= 0)
-                    help = "Press the button or trigger for this fret. Minus cancels.";
+                    help = tr("Press the button or trigger for this fret. Minus cancels.");
                 // Help for the selected row, engraved along the bottom of the plate.
                 rect(84, 566, 1112, 1, {0, 0, 0, 150});
                 rect(84, 567, 1112, 1, {176, 180, 192, 42});
@@ -2542,38 +2636,38 @@ int main(int argc, char **argv) {
                     plate(150, 120, 980, 470);
                     auto head = stencil(44);
                     head.align = Align::Center;
-                    text(640, 140, "CONTROLLER TEST", head);
+                    text(640, 140, tr("CONTROLLER TEST"), head);
                     const auto probe = controller.probe();
                     const uint64_t normalized = buttons;
                     auto lines = std::vector<std::pair<std::string, std::string>>{
-                        {"normal controller", probe.standard ? "connected" : "not connected"},
-                        {"player one (guitar)", probe.guitar ? "connected" : "not connected"},
-                        {"guitar mode", settings.wiiGuitar ? "on" : "off"},
+                        {tr("normal controller"), tr(probe.standard ? "connected" : "not connected")},
+                        {tr("player one (guitar)"), tr(probe.guitar ? "connected" : "not connected")},
+                        {tr("guitar mode"), tr(settings.wiiGuitar ? "on" : "off")},
                     };
 #ifdef __SWITCH__
                     char styles[64];
                     std::snprintf(styles, sizeof(styles), "0x%08x / 0x%08x", probe.standardStyle, probe.guitarStyle);
-                    lines.push_back({"styles (normal/player one)", styles});
+                    lines.push_back({tr("styles (normal/player one)"), styles});
                     char raw[64];
                     std::snprintf(raw, sizeof(raw), "0x%08llx / 0x%08llx", (unsigned long long)probe.standardRaw,
                                   (unsigned long long)probe.guitarRaw);
-                    lines.push_back({"raw buttons", raw});
+                    lines.push_back({tr("raw buttons"), raw});
 #else
-                    lines.push_back({"controller", probe.name});
+                    lines.push_back({tr("controller"), probe.name});
 #endif
                     std::string pressed;
                     for (int b = 0; b <= 33; ++b)
                         if (normalized & bit(b))
                             pressed += (pressed.empty() ? "" : " ") + bindingName(b);
-                    lines.push_back({"buttons seen by the game", pressed.empty() ? "none" : pressed});
+                    lines.push_back({tr("buttons seen by the game"), pressed.empty() ? tr("none") : pressed});
                     const uint8_t testFrets = settings.wiiGuitar ? wiiGuitarFrets(normalized) : frets;
                     std::string fretText;
                     const char *fretNames[] = {"green", "red", "yellow", "blue", "orange"};
                     for (int i = 0; i < 5; ++i)
                         if (testFrets & (1 << i))
-                            fretText += (fretText.empty() ? "" : " ") + std::string(fretNames[i]);
-                    lines.push_back({"frets", fretText.empty() ? "none" : fretText});
-                    lines.push_back({"strum", (normalized & (bit(11) | bit(12))) ? "yes" : "no"});
+                            fretText += (fretText.empty() ? "" : " ") + std::string(tr(fretNames[i]));
+                    lines.push_back({tr("frets"), fretText.empty() ? tr("none") : fretText});
+                    lines.push_back({tr("strum"), tr((normalized & (bit(11) | bit(12))) ? "yes" : "no")});
                     for (size_t i = 0; i < lines.size(); ++i) {
                         const float y = 210 + i * 46;
                         text(200, y, lines[i].first, body(22, ink::dim));
@@ -2583,24 +2677,24 @@ int main(int argc, char **argv) {
                     }
                     auto hint = body(18, ink::faint);
                     hint.align = Align::Center;
-                    text(640, 556, "Press the guitar's frets and strum. Nothing here means the guitar is not "
-                                   "reaching the game.", hint);
+                    text(640, 556, tr("Press the guitar's frets and strum. Nothing here means the guitar is not "
+                                      "reaching the game."), hint);
                     // B is one of the buttons being tested, so Minus closes the panel.
-                    hintButton(556, 620, settings.wiiGuitar ? glyphBack : "-", "CLOSE");
+                    hintButton(556, 620, settings.wiiGuitar ? glyphBack : "-", tr("CLOSE"));
                 } else if (optionsPage < 0)
-                    hints({{glyphAccept, "OPEN"}, {glyphBack, "SAVE & BACK"}});
+                    hints({{glyphAccept, tr("OPEN")}, {glyphBack, tr("SAVE & BACK")}});
                 else
-                    hints({{glyphAccept, "SELECT"}, {"<>", "CHANGE"}, {glyphBack, "BACK"}});
+                    hints({{glyphAccept, tr("SELECT")}, {"<>", tr("CHANGE")}, {glyphBack, tr("BACK")}});
             } else if (screen == Screen::Download) {
                 wall(ui, ink::crt);
-                text(58, 24, "DOWNLOAD", stencil(78, ink::chrome, {116, 122, 138, 255}));
-                text(72, 118, "charts from chorus encore", marker(26, {198, 200, 212, 255}, -3));
+                text(58, 24, tr("DOWNLOAD"), stencil(78, ink::chrome, {116, 122, 138, 255}));
+                text(72, 118, tr("charts from chorus encore"), marker(26, {198, 200, 212, 255}, -3));
                 // Search field.
                 rect(60, 160, 1160, 52, {0, 0, 0, 150});
                 rect(60, 211, 1160, 1, {176, 180, 192, 42});
                 {
                     const bool empty = query.empty();
-                    std::string shown = empty && !typing ? "newest charts - press Y to search" : query;
+                    std::string shown = empty && !typing ? tr("newest charts - press Y to search") : query;
                     if (typing && std::fmod(ui, 1.0) < .55)
                         shown += "_";
                     auto field = body(24, empty && !typing ? ink::faint : ink::white);
@@ -2649,7 +2743,7 @@ int main(int argc, char **argv) {
                 if (results.empty() && downloads.state == Downloader::State::Idle && downloads.error.empty()) {
                     auto none = body(22, ink::dim);
                     none.align = Align::Center;
-                    text(640, 390, downloads.page ? "No guitar charts matched." : "", none);
+                    text(382, 390, downloads.page ? tr("No guitar charts matched.") : "", none);
                 }
                 // Status line: progress, errors, or what the list holds.
                 if (downloads.state == Downloader::State::Downloading) {
@@ -2658,15 +2752,16 @@ int main(int argc, char **argv) {
                     std::snprintf(line, sizeof line, "%s   %.1f MB", downloads.status.c_str(), downloads.megabytes);
                     text(510, 622, line, body(18, ink::dim));
                 } else if (!downloads.error.empty())
-                    text(62, 620, downloads.error, marker(22, ink::blood, -1));
+                    text(62, 620, tr(downloads.error), marker(22, ink::blood, -1));
                 else if (downloads.state == Downloader::State::Searching)
-                    text(62, 622, "searching...", body(18, ink::dim));
+                    text(62, 622, tr("searching..."), body(18, ink::dim));
                 else if (downloads.downloads != downloadsSeen && !downloads.lastFolder.empty())
-                    text(62, 620, "added " + downloads.lastFolder, marker(22, ink::acid, -1));
+                    text(62, 620, tr("added {}", downloads.lastFolder), marker(22, ink::acid, -1));
                 else if (downloads.page)
-                    text(62, 622, std::to_string(downloads.found) + " guitar charts", body(18, ink::faint));
+                    text(62, 622, tr(downloads.found == 1 ? "{} guitar chart" : "{} guitar charts", downloads.found),
+                         body(18, ink::faint));
                 if (typing) {
-                    hints({{"ENT", "SEARCH"}, {"ESC", "CANCEL"}}); // desktop typing only
+                    hints({{"ENT", tr("SEARCH")}, {"ESC", tr("CANCEL")}}); // desktop typing only
                 } else {
                     hints({{glyphAccept, "DOWNLOAD"},
                            {glyphAlt, "SEARCH"},
@@ -2678,11 +2773,11 @@ int main(int argc, char **argv) {
                 wall(ui, ink::crt);
                 if (calibratingVideo && !done)
                     highway(calibrationSong, *calibrationSession, settings, time - settings.videoMs / 1000, frets, ui);
-                text(46, 24, "CALIBRATE", stencil(56, ink::chrome, {116, 122, 138, 255}));
-                text(52, 92, calibratingVideo ? "visual offset" : "audio offset", marker(24, {198, 200, 212, 255}, -3));
+                text(46, 24, tr("CALIBRATE"), stencil(56, ink::chrome, {116, 122, 138, 255}));
+                text(52, 92, tr(calibratingVideo ? "visual offset" : "audio offset"), marker(24, {198, 200, 212, 255}, -3));
                 // Taps panel, where the score plate sits in a song.
                 plate(38, 158, 252, 330);
-                text(64, 184, "TAPS", stencil(22, ink::steel, {80, 84, 96, 255}));
+                text(64, 184, tr("TAPS"), stencil(22, ink::steel, {80, 84, 96, 255}));
                 text(64, 212,
                      std::to_string(calibration.errors.size()) + " / " + std::to_string(calibration.needed),
                      stencil(52));
@@ -2691,10 +2786,10 @@ int main(int argc, char **argv) {
                 const float ruleX = 64, ruleW = 200, ruleY = 330, rangeMs = 150;
                 rect(ruleX, ruleY, ruleW, 2, {70, 72, 84, 255});
                 rect(ruleX + ruleW / 2 - 1, ruleY - 14, 2, 30, {110, 114, 128, 255});
-                text(ruleX, ruleY + 22, "early", body(14, ink::faint));
+                text(ruleX, ruleY + 22, tr("early"), body(14, ink::faint));
                 auto lateLabel = body(14, ink::faint);
                 lateLabel.align = Align::Right;
-                text(ruleX + ruleW, ruleY + 22, "late", lateLabel);
+                text(ruleX + ruleW, ruleY + 22, tr("late"), lateLabel);
                 for (size_t i = 0; i < calibration.errors.size(); ++i) {
                     const float ms = float(std::clamp(calibration.errors[i] * 1000, -double(rangeMs), double(rangeMs)));
                     const float x = ruleX + ruleW / 2 + ms / rangeMs * ruleW / 2;
@@ -2704,49 +2799,49 @@ int main(int argc, char **argv) {
                     rect(x - 1.5f, ruleY - 10, 3, 22, latest ? ink::acid : alpha(ink::acid, .45f));
                 }
                 if (!calibration.errors.empty()) {
-                    char median[48];
-                    std::snprintf(median, sizeof median, "median %+d ms", int(std::round(calibration.median() * 1000)));
-                    text(64, 400, median, body(20, ink::dim));
+                    char median[16];
+                    std::snprintf(median, sizeof median, "%+d", int(std::round(calibration.median() * 1000)));
+                    text(64, 400, tr("median {} ms", median), body(20, ink::dim));
                 }
                 if (!done) {
                     if (!calibratingVideo) {
                         // Nothing on screen moves with the beat: the ears alone set the taps.
                         auto big = stencil(64);
                         big.align = Align::Center;
-                        text(700, 280, time < calibration.warmup ? "LISTEN" : "TAP", big);
+                        text(700, 280, tr(time < calibration.warmup ? "LISTEN" : "TAP"), big);
                         auto hint = body(22, ink::dim);
                         hint.align = Align::Center;
-                        text(700, 370, "Tap any fret or strum on every click.", hint);
-                        text(700, 402, "Close your eyes if it helps.", hint);
+                        text(700, 370, tr("Tap any fret or strum on every click."), hint);
+                        text(700, 402, tr("Close your eyes if it helps."), hint);
                     } else {
                         auto hint = body(20, ink::dim);
                         hint.align = Align::Center;
-                        text(1100, 250, "Clicks are muted.", hint);
-                        text(1100, 280, "Tap as each note", hint);
-                        text(1100, 306, "crosses the line.", hint);
+                        text(1100, 250, tr("Clicks are muted."), hint);
+                        text(1100, 280, tr("Tap as each note"), hint);
+                        text(1100, 306, tr("crosses the line."), hint);
                     }
-                    button(58, 676, "-", "CANCEL");
+                    button(58, 676, "-", tr("CANCEL"));
                 } else {
                     rect(0, 0, W, H, {5, 5, 8, 150});
                     plate(390, 190, 620, 330);
                     auto head = stencil(40);
                     head.align = Align::Center;
-                    text(700, 214, calibratingVideo ? "VISUAL OFFSET" : "AUDIO / INPUT OFFSET", head);
+                    text(700, 214, tr(calibratingVideo ? "VISUAL OFFSET" : "AUDIO / INPUT OFFSET"), head);
                     const double was = calibratingVideo ? settings.videoMs : settings.audioMs;
                     auto value = stencil(72, ink::acid, mix(ink::acid, SDL_Color{20, 40, 10, 255}, .5f));
                     value.align = Align::Center;
                     text(700, 280, std::to_string(int(calibrationResult())) + " ms", value);
                     auto sub = body(20, ink::dim);
                     sub.align = Align::Center;
-                    text(700, 380, "was " + std::to_string(int(was)) + " ms", sub);
+                    text(700, 380, tr("was {} ms", int(was)), sub);
                     // A wide spread means the median is a guess; say so rather than
                     // quietly saving it.
                     if (calibration.spread() > .025) {
                         auto warn = marker(22, ink::blood, -1);
                         warn.align = Align::Center;
-                        text(700, 420, "taps were uneven - retry for a steadier read", warn);
+                        text(700, 420, tr("taps were uneven - retry for a steadier read"), warn);
                     }
-                    hints({{glyphAccept, "KEEP"}, {glyphAlt, "RETRY"}, {glyphBack, "CANCEL"}}, 430, 470);
+                    hints({{glyphAccept, tr("KEEP")}, {glyphAlt, tr("RETRY")}, {glyphBack, tr("CANCEL")}}, 430, 470);
                 }
             } else if (session && song) {
                 double time = screen == Screen::Playing ? songTime() : frozen;
@@ -2765,7 +2860,7 @@ int main(int argc, char **argv) {
                         auto s = stencil(30 + 14 * pop, tint, mix(tint, SDL_Color{30, 30, 36, 255}, .5f));
                         s.align = Align::Center;
                         s.glow = alpha(tint, .55f * pop), s.glowSpread = 1.2f;
-                        text(640, 432 - 24 * pop, names[session->lastTier], s);
+                        text(640, 432 - 24 * pop, tr(names[session->lastTier]), s);
                         // Anything short of perfect also says which side of the beat you
                         // were on, so the miss is correctable rather than mysterious.
                         if (session->lastTier < 3) {
@@ -2776,7 +2871,7 @@ int main(int argc, char **argv) {
                             rect(640 + off * span / 2 - 2, 488, 4, 14, alpha(tint, pop));
                             auto l = body(15, alpha(SDL_Color{170, 176, 190, 255}, pop * .9f));
                             l.align = Align::Center;
-                            text(640, 506, session->lastError < 0 ? "EARLY" : "LATE", l);
+                            text(640, 506, tr(session->lastError < 0 ? "EARLY" : "LATE"), l);
                         }
                     }
                 }
@@ -2787,7 +2882,8 @@ int main(int argc, char **argv) {
                     s.align = Align::Center, s.maxWidth = 390;
                     text(250, 34, plainTitle(song->name), s);
                 }
-                text(46, 96, song->artist + "  /  " + session->track->instrument + " " + difficultyName(session->track->difficulty),
+                text(46, 96, song->artist + "  /  " + tr(session->track->instrument) + " " +
+                                 tr(difficultyName(session->track->difficulty)),
                      body(17, ink::dim));
                 {
                     auto t = body(19, ink::dim);
@@ -2809,7 +2905,7 @@ int main(int argc, char **argv) {
                     rect(62, y, 204, 1, {0, 0, 0, 150});
                     rect(62, y + 1, 204, 1, {176, 180, 192, 42});
                 };
-                text(62, 186, "SCORE", stencil(20, ink::dim, ink::faint));
+                text(62, 186, tr("SCORE"), stencil(20, ink::dim, ink::faint));
                 {
                     // Shrink long scores to the plate rather than running off it, and
                     // keep them centred on the same line.
@@ -2822,15 +2918,14 @@ int main(int argc, char **argv) {
                     text(58, 208 + (62 - size) * .5f - size * (pop - 1) * .5f, value, s);
                 }
                 engrave(282);
-                text(64, 292, "streak", marker(26, ink::dim, -3));
+                text(64, 292, tr("streak"), marker(26, ink::dim, -3));
                 text(58, 314, std::to_string(session->combo), stencil(60, session->combo ? ink::acid : ink::faint,
                                                                        session->combo ? SDL_Color{110, 190, 30, 255} : ink::faint));
                 engrave(392);
                 const int judged = session->hits + session->misses;
-                text(62, 412, (judged ? std::to_string(session->hits * 100 / judged) : std::string("100")) + "% HIT",
-                     body(24, ink::white));
+                text(62, 412, tr("{}% HIT", judged ? session->hits * 100 / judged : 100), body(24, ink::white));
                 // Clear of the panel's bottom screws.
-                text(62, 442, std::to_string(session->misses) + " missed", body(17, ink::faint));
+                text(62, 442, tr("{} missed", session->misses), body(17, ink::faint));
                 {
                     const float pop = 1 + .3f * decay(ui - multiplierPopAt, .35);
                     const float spin = 9 + 14 * decay(ui - multiplierPopAt, .35);
@@ -2842,9 +2937,9 @@ int main(int argc, char **argv) {
                 text(940, 372, "STAR POWER", stencil(20, ink::dim, ink::faint));
                 ledMeter(940, 404, 232, 20, 12, float(session->power), session->powerActive, ui);
                 if (session->powerActive)
-                    text(940, 442, "BURNING", marker(24, ink::power, -2));
+                    text(940, 442, tr("BURNING"), marker(24, ink::power, -2));
                 else if (session->power >= .5 && std::fmod(ui, 1.0) < .6)
-                    text(940, 442, settings.wiiGuitar ? "hit MINUS !" : "hit X !", marker(24, ink::acid, -3));
+                    text(940, 442, tr(settings.wiiGuitar ? "hit MINUS !" : "hit X !"), marker(24, ink::acid, -3));
                 // Rock meter: the tug of war that decides whether the set survives.
                 {
                     const bool danger = session->inRed() && !session->noFail;
@@ -2855,11 +2950,11 @@ int main(int argc, char **argv) {
                     if (session->noFail) {
                         auto safe = marker(20, ink::acid, -4);
                         safe.align = Align::Center;
-                        text(1232, 580, "no fail", safe);
+                        text(1232, 580, tr("no fail"), safe);
                     } else if (danger && std::fmod(ui, .7) < .45) {
                         auto warn = marker(22, ink::blood, -5);
                         warn.align = Align::Center;
-                        text(1232, 580, "danger!", warn);
+                        text(1232, 580, tr("danger!"), warn);
                     }
                     if (danger) // the room goes red as the crowd turns
                         rect(0, 0, W, H, {200, 20, 20, Uint8(10 + 14 * (.5f + .5f * std::sin(float(ui) * 14)))});
@@ -2881,7 +2976,7 @@ int main(int argc, char **argv) {
                     text(640, 232 - 150 * (pop - 1) * .5f, std::to_string(int(std::ceil(-time))), s);
                     auto ready = marker(30, {206, 208, 218, 255}, -3);
                     ready.align = Align::Center;
-                    text(640, 430, "get ready", ready);
+                    text(640, 430, tr("get ready"), ready);
                 }
                 if (calloutAt > 0 && ui - calloutAt < 1.4) {
                     const float t = float((ui - calloutAt) / 1.4);
@@ -2894,9 +2989,9 @@ int main(int argc, char **argv) {
                 // Sits in the corner the vignette darkens most, so it needs to start
                 // brighter than ink::faint to stay readable through the grade.
                 text(46, 686,
-                     settings.wiiGuitar   ? "Plus pause    strum with no frets for open notes    Minus star power"
-                     : settings.gamepad ? "Plus pause    any fret hits open notes    X star power"
-                                        : "Plus pause    strum with no frets for open notes    X star power",
+                     tr(settings.wiiGuitar ? "Plus pause    strum with no frets for open notes    Minus star power"
+                        : settings.gamepad ? "Plus pause    any fret hits open notes    X star power"
+                                           : "Plus pause    strum with no frets for open notes    X star power"),
                      body(16, ink::dim));
                 if (screen == Screen::Countdown) {
                     // The frozen board stays visible so the player can see what is coming.
@@ -2909,7 +3004,7 @@ int main(int argc, char **argv) {
                     text(640, 232 - 150 * (pop - 1) * .5f, std::to_string(std::max(1, int(std::ceil(left)))), s);
                     auto ready = marker(30, {206, 208, 218, 255}, -3);
                     ready.align = Align::Center;
-                    text(640, 430, "get ready", ready);
+                    text(640, 430, tr("get ready"), ready);
                 }
                 if (screen == Screen::Paused || screen == Screen::Results) {
                     rect(0, 0, W, H, {5, 5, 8, 238});
@@ -2918,7 +3013,7 @@ int main(int argc, char **argv) {
                     const bool failed = session->failed;
                     if (failed)
                         heading.glow = alpha(ink::blood, .95f);
-                    text(640, 76, screen == Screen::Paused ? "PAUSED" : failed ? "SONG FAILED" : "SONG COMPLETE",
+                    text(640, 76, tr(screen == Screen::Paused ? "PAUSED" : failed ? "SONG FAILED" : "SONG COMPLETE"),
                          heading);
                     if (screen == Screen::Results) {
                         const float accuracy = session->state.empty() ? 1 : float(session->hits) / session->state.size();
@@ -2933,7 +3028,7 @@ int main(int argc, char **argv) {
                         text(354, 206, rank, rankStyle);
                         auto played = marker(24, {198, 200, 212, 255}, -2);
                         played.align = Align::Center;
-                        text(354, 400, session->track->instrument + "  /  " + difficultyName(session->track->difficulty),
+                        text(354, 400, tr(session->track->instrument) + "  /  " + tr(difficultyName(session->track->difficulty)),
                              played);
                         if (!failed && session->misses == 0 && session->hits > 0)
                             sticker(470, 336, 40, -12, {255, 196, 40, 255}, "FC");
@@ -2942,12 +3037,13 @@ int main(int argc, char **argv) {
                             tape(1120, 240, 210, 56, 8);
                             auto nb = marker(28, ink::blood, 8);
                             nb.align = Align::Center;
-                            text(1120, 222, "NEW BEST!", nb);
+                            text(1120, 222, tr("NEW BEST!"), nb);
                         }
                         if (!failed && previousBest >= 0) {
                             auto was = body(17, ink::dim);
                             was.align = Align::Center;
-                            text(1120, 300, (newBest ? "was " : "best ") + grouped(newBest ? previousBest : std::max(previousBest, 0)), was);
+                            text(1120, 300, tr(newBest ? "was {}" : "best {}", grouped(newBest ? previousBest : std::max(previousBest, 0))),
+                                 was);
                         }
                         const std::string value = grouped(int(session->score));
                         const float size = fitSize(value, stencil(84), 440);
@@ -2956,26 +3052,26 @@ int main(int argc, char **argv) {
                         text(840, 200 + (84 - size) * .5f, value, score);
                         auto scoreLabel = stencil(20, ink::dim, ink::faint);
                         scoreLabel.align = Align::Center;
-                        text(840, 176, "FINAL SCORE", scoreLabel);
+                        text(840, 176, tr("FINAL SCORE"), scoreLabel);
                         for (int i = 0; i < 5; ++i)
                             star(700 + i * 70, 322, 28, (hash01(uint32_t(i) * 7) - .5f) * 16,
                                  i < stars ? SDL_Color{255, 198, 44, 255} : SDL_Color{48, 48, 56, 255}, {14, 14, 18, 255});
                         auto verdict = marker(40, failed ? ink::blood : ink::acid, -4);
                         verdict.align = Align::Center;
                         text(840, 362,
-                             failed ? "the crowd is booing"
-                                    : accuracy >= .97f ? "flawless!" : accuracy >= .9f ? "shredded it" :
-                                      accuracy >= .8f ? "solid set" : accuracy >= .65f ? "not bad" : "keep practicing",
+                             tr(failed ? "the crowd is booing"
+                                       : accuracy >= .97f ? "flawless!" : accuracy >= .9f ? "shredded it" :
+                                         accuracy >= .8f ? "solid set" : accuracy >= .65f ? "not bad" : "keep practicing"),
                              verdict);
                         // Stats scrawled on strips of tape.
                         const std::array<std::pair<std::string, std::string>, 4> stats = {
-                            std::pair{"notes hit", std::to_string(session->hits) + " / " + std::to_string(session->state.size())},
-                            {"best streak", std::to_string(session->maxCombo)},
+                            std::pair{std::string(tr("notes hit")), std::to_string(session->hits) + " / " + std::to_string(session->state.size())},
+                            {tr("best streak"), std::to_string(session->maxCombo)},
                             // How clean the run was, not just how much of it landed.
-                            {"perfect / great / good", std::to_string(session->tierCounts[3]) + " / " +
+                            {tr("perfect / great / good"), std::to_string(session->tierCounts[3]) + " / " +
                                                            std::to_string(session->tierCounts[2]) + " / " +
                                                            std::to_string(session->tierCounts[1])},
-                            {"accuracy", std::to_string(int(accuracy * 100)) + "%"}};
+                            {tr("accuracy"), std::to_string(int(accuracy * 100)) + "%"}};
                         for (int i = 0; i < 4; ++i) {
                             const float ty = 444 + i * 56, angle = (hash01(uint32_t(i) * 31) - .5f) * 3;
                             tape(840, ty, 520, 50, angle);
@@ -2992,31 +3088,32 @@ int main(int argc, char **argv) {
                         text(640, 232, plainTitle(song->name), line);
                         auto held = body(20, ink::dim);
                         held.align = Align::Center;
-                        text(640, 312, "the amp is still humming", held);
+                        text(640, 312, tr("the amp is still humming"), held);
                     }
                     if (screen == Screen::Paused) {
                         menu(640, 392, 62, {"RESUME", "RESTART", "CHANGE DIFFICULTY", "QUIT TO SONG LIST"}, pauseRow,
                              ui, 460, 32, {audio.error().empty(), true, true, true});
                         hints({{glyphAccept, "SELECT"}, {glyphBack, "RESUME"}});
                     } else {
-                        std::vector<std::string> items = {"CONTINUE", "RETRY", "CHANGE DIFFICULTY"};
+                        std::vector<std::string> items = {tr("CONTINUE"), tr("RETRY"), tr("CHANGE DIFFICULTY")};
                         if (offsetTip)
-                            items.push_back(offsetTipApplied ? "TIMING FIXED"
-                                                             : std::string("FIX TIMING (") + (offsetTip > 0 ? "+" : "") +
-                                                                   std::to_string(offsetTip) + " MS)");
+                            items.push_back(offsetTipApplied ? tr("TIMING FIXED")
+                                                             : tr("FIX TIMING ({} MS)", (offsetTip > 0 ? "+" : "") +
+                                                                                            std::to_string(offsetTip)));
                         menu(354, 478, offsetTip ? 52 : 62, items, resultRow, ui, 400, 30,
                              offsetTip ? std::vector<bool>{true, true, true, !offsetTipApplied} : std::vector<bool>{});
                         if (offsetTip) {
                             auto why = body(17, ink::dim);
                             why.align = Align::Center;
                             text(840, 646,
-                                 offsetTipApplied ? "audio offset now " + std::to_string(int(settings.audioMs)) + " ms"
-                                                  : "you hit " + std::to_string(std::abs(offsetTip)) + " ms " +
-                                                        (offsetTip > 0 ? "late" : "early") + " on average",
+                                 offsetTipApplied ? tr("audio offset now {} ms", int(settings.audioMs))
+                                                  : tr(offsetTip > 0 ? "you hit {} ms late on average"
+                                                                     : "you hit {} ms early on average",
+                                                       std::abs(offsetTip)),
                                  why);
                         }
                         if (ui - screenChangedAt >= resultsLockout) // hints appear once presses count
-                            hints({{glyphAccept, "SELECT"}, {glyphBack, "CONTINUE"}});
+                            hints({{glyphAccept, tr("SELECT")}, {glyphBack, tr("CONTINUE")}});
                     }
                     if (!message.empty()) {
                         auto m = marker(22, messageInk(), -1);

@@ -1,4 +1,5 @@
 #include "game.hpp"
+#include "lang.hpp"
 #include "scores.hpp"
 #include <fstream>
 #include <cmath>
@@ -32,6 +33,21 @@ int main(int argc, char **argv) {
               "sort keys drop tags, case and a leading the");
         check(jumpLetter(sortKey("the Offspring")) == 'O' && jumpLetter("3 doors") == '#' && jumpLetter("") == '#',
               "jump letters");
+        {
+            // Interface text: English passes through, Portuguese is looked up by
+            // the English text, placeholders fill in order, unknown text is kept.
+            using lang::tr;
+            lang::set(lang::Language::English);
+            check(std::string(tr("QUIT")) == "QUIT" && tr("{} notes", 12) == "12 notes", "english text");
+            lang::set(lang::Language::Portuguese);
+            check(std::string(tr("QUIT")) == "SAIR" && tr("{} notes", 12) == "12 notas", "portuguese text");
+            check(tr("not played on {} {}", tr(std::string("Bass")), tr("Easy")) == "ainda não jogada: Baixo Fácil",
+                  "portuguese placeholders");
+            check(std::string(tr("Through the Fire and Flames")) == "Through the Fire and Flames" &&
+                      lang::fill("{} / {}", {"1"}) == "1 / {}",
+                  "untranslated text and missing arguments pass through");
+            lang::set(lang::Language::English);
+        }
         {
             // High scores: stars and rank thresholds, best-only keeping, and a
             // round trip through the file with a folder name full of spaces.
