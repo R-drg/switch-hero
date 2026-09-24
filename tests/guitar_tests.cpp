@@ -28,7 +28,21 @@ int main() {
           "paused guitar gameplay restores handheld menu input");
     std::array<std::uint8_t, 6> report{32, 32, 15, 16, 255, 255};
     auto idle = fret::decodeWiiGuitar(report.data(), report.size());
-    check(!idle.frets && !idle.up && !idle.down && !idle.plus && !idle.minus && !idle.left && !idle.right, "neutral report");
+    check(!idle.frets && !idle.up && !idle.down && !idle.plus && !idle.minus && !idle.left && !idle.right &&
+              idle.whammy == 0,
+          "neutral report");
+    {
+        auto bar = report;
+        bar[3] = 0x1b;
+        check(fret::decodeWiiGuitar(bar.data(), 6).whammy == 1, "whammy fully down");
+        bar[3] = 0x80 | 0x1f; // high bits belong to other fields; past the range clamps
+        check(fret::decodeWiiGuitar(bar.data(), 6).whammy == 1, "whammy clamps high");
+        bar[3] = 0x0e;
+        check(fret::decodeWiiGuitar(bar.data(), 6).whammy == 0, "whammy clamps low");
+        bar[3] = 0x15;
+        const float half = fret::decodeWiiGuitar(bar.data(), 6).whammy;
+        check(half > .4f && half < .5f, "whammy halfway");
+    }
     // Every chord, with both strum directions and active-low fret ordering.
     constexpr unsigned masks[] = {0x10, 0x40, 0x08, 0x20, 0x80};
     for (unsigned chord = 0; chord < 32; ++chord) {
@@ -67,7 +81,7 @@ int main() {
     check(!fret::decodeWiiGuitar(nullptr, 6).frets, "null packet");
     report.fill(255);
     auto absent = fret::decodeWiiGuitar(report.data(), 6);
-    check(!absent.frets && !absent.right, "unavailable extension");
+    check(!absent.frets && !absent.right && absent.whammy == 0, "unavailable extension");
     check(!fret::wiiGuitarFrets((1ull << 3) | (1ull << 6) | (1ull << 11)), "actions aren't frets");
     std::cout << "Wii guitar input tests passed\n";
 }

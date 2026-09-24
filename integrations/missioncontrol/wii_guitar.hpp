@@ -9,6 +9,7 @@ struct WiiGuitarState {
     std::uint8_t frets = 0;
     bool up = false, down = false, plus = false, minus = false;
     bool left = false, right = false;
+    float whammy = 0; // 0 with the bar at rest, 1 pushed all the way down
 };
 inline WiiGuitarState decodeWiiGuitar(const std::uint8_t* data, std::size_t size) {
     WiiGuitarState state;
@@ -28,6 +29,10 @@ inline WiiGuitarState decodeWiiGuitar(const std::uint8_t* data, std::size_t size
     state.down = !(data[4] & 0x40);
     state.plus = !(data[4] & 0x04);
     state.minus = !(data[4] & 0x10);
+    // Whammy: five bits, about 0x10 at rest to 0x1B fully down. Guitars
+    // differ a little, so the ends are clamped rather than trusted.
+    const float bar = (float(data[3] & 0x1f) - 0x10) / (0x1b - 0x10);
+    state.whammy = bar < 0 ? 0 : bar > 1 ? 1 : bar;
     // Strip model flag bits. Only horizontal navigation is mapped to avoid
     // creating strums from the guitar joystick's vertical axis.
     const int x = data[0] & 0x3f;

@@ -176,6 +176,44 @@ int main(int argc, char **argv) {
             check(broken.hits == 2 && broken.power == 0, "a broken phrase earns nothing");
         }
         {
+            // Whammy: bending a held star-phrase sustain fills star power; a
+            // still bar, an ordinary sustain or a broken phrase earns nothing.
+            Song steady; // 120 BPM throughout, so four beats last two seconds
+            steady.tempos = {{0, 120, 0}};
+            Track bend;
+            bend.phrases = {{0, 1000}};
+            Note n;
+            n.time = 1, n.mask = 1, n.phrase = 0;
+            n.end.fill(n.time);
+            n.end[0] = 3; // four beats at 120 BPM
+            bend.notes = {n};
+            auto play = [&](const Track &track, bool wiggle, bool miss) {
+                Session s(steady, track);
+                if (!miss)
+                    s.update(1, 1, false);
+                for (int f = 1; f <= 120; ++f) {
+                    const double t = 1 + f / 60.0;
+                    s.whammy(wiggle ? (f / 6) % 2 : 0, t);
+                    s.update(t, miss ? 0 : 1, false);
+                }
+                return s;
+            };
+            const auto still = play(bend, false, false), bent = play(bend, true, false);
+            check(std::abs(still.power - .25) < 1e-9, "a still bar adds nothing beyond the phrase");
+            const double gained = bent.power - still.power;
+            check(gained > 3.5 / 30 && gained < 4.0 / 30 + 1e-9, "whammy fills star power per beat bent");
+            Track plain = bend;
+            plain.phrases.clear();
+            plain.notes[0].phrase = -1;
+            check(play(plain, true, false).power == 0, "whammy on an ordinary sustain earns nothing");
+            check(play(bend, true, true).power == 0, "whammy on a missed note earns nothing");
+            Session drift(steady, bend);
+            drift.update(1, 1, false);
+            for (int f = 1; f <= 60; ++f)
+                drift.whammy(.5 + .01 * (f % 2), 1 + f / 60.0), drift.update(1 + f / 60.0, 1, false);
+            check(std::abs(drift.power - .25) < 1e-9, "stick jitter below the step is not whammying");
+        }
+        {
             // Hit windows widen on easier difficulties and with the lenient
             // setting; strict expert keeps roughly the old 70 ms.
             check(Session::windowFor(0, 1) > Session::windowFor(3, 1) &&

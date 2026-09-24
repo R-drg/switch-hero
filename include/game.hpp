@@ -51,6 +51,29 @@ struct Session {
     int lastTier = 0;
     double lastError = 0, lastTierAt = -1e9;
     uint8_t previous = 0;
+    // Whammy, as in the originals: bending a sustain from an intact star
+    // phrase fills star power while it rings, and keeps an active star power
+    // going longer. Only movement counts; a bar or stick held still earns
+    // nothing, so resting on it, or a drifting stick, is not rewarded. The
+    // song itself is left untouched.
+    static constexpr double whammyPowerPerBeat = 1.0 / 30; // a little faster than star power drains
+    static constexpr double whammyStep = .06, whammyHold = .15;
+    double whammyAnchor = -1, whammyUntil = -1e9, lastWhammyGain = -1e9;
+    // Feed the bar or stick position each frame, 0 at rest to 1 fully in,
+    // before update(). A move of whammyStep counts as whammying for whammyHold.
+    void whammy(double position, double time) {
+        if (whammyAnchor < 0 || std::abs(position - whammyAnchor) >= whammyStep) {
+            if (whammyAnchor >= 0)
+                whammyUntil = time + whammyHold;
+            whammyAnchor = position;
+        }
+    }
+    bool whammying(double time) const { return time < whammyUntil; }
+    // Whether note i is a star-phrase sustain still being held, so whammying it pays.
+    bool whammyable(size_t i) const {
+        const auto &n = track->notes[i];
+        return n.phrase >= 0 && !phraseFailed[size_t(n.phrase)] && state[i].result == 1 && state[i].held;
+    }
     int tierFor(double err) const {
         const double d = std::abs(err);
         return d <= window * perfectShare ? 3 : d <= window * greatShare ? 2 : 1;
@@ -205,6 +228,9 @@ struct Session {
         for (size_t i = 0; i < next; ++i)
             if (state[i].result == 1 && state[i].held) {
                 auto &n = track->notes[i];
+                // Once per note, not per lane: a whammied chord is one bend.
+                double bendFrom = 1e300, bendTo = -1e300;
+                const bool bending = whammying(time) && whammyable(i);
                 for (int l = 0; l < 6; ++l)
                     if (state[i].held & (1 << l)) {
                         bool down = l == 5 ? held == 0 : bool(held & (1 << l));
@@ -213,14 +239,21 @@ struct Session {
                             continue;
                         }
                         double a = std::max(lastTime, n.time), b = std::min(time, n.end[l]);
-                        if (b > a)
+                        if (b > a) {
                             score += 25 * std::max(0.0, song->tickAt(b) - song->tickAt(a)) /
                                      song->resolution * multiplier();
+                            bendFrom = std::min(bendFrom, a), bendTo = std::max(bendTo, b);
+                        }
                         if (time >= n.end[l])
                             state[i].held &= uint8_t(~(1 << l));
                         else if (l < 5)
                             sustainedFrets |= uint8_t(1 << l);
                     }
+                if (bending && bendTo > bendFrom) {
+                    power = std::min(1.0, power + std::max(0.0, song->tickAt(bendTo) - song->tickAt(bendFrom)) /
+                                                      song->resolution * whammyPowerPerBeat);
+                    lastWhammyGain = time;
+                }
             }
         // Sweep only up to the press, so a note it landed on is not written off
         // first; anything later is swept on the next frame.

@@ -226,6 +226,10 @@ class Controller {
         uint64_t standard = 0, guitar = 0;
         bool standardOn = false, guitarOn = false;
         uint32_t standardStyle = 0, guitarStyle = 0;
+        // Whammy sources: the further-pushed stick of the normal controller,
+        // and the guitar's bar, which the MissionControl patch sends as right
+        // stick X. Both 0 to 1.
+        float standardStick = 0, guitarWhammy = 0;
     };
     PadState nx{}, nxGuitar{};
     std::thread poller;
@@ -258,6 +262,11 @@ class Controller {
             s.standard = padGetButtons(&nx), s.guitar = padGetButtons(&nxGuitar);
             s.standardOn = padIsConnected(&nx), s.guitarOn = padIsConnected(&nxGuitar);
             s.standardStyle = padGetStyleSet(&nx), s.guitarStyle = padGetStyleSet(&nxGuitar);
+            auto deflection = [](HidAnalogStickState st) {
+                return std::min(1.0f, std::hypot(float(st.x), float(st.y)) / JOYSTICK_MAX);
+            };
+            s.standardStick = std::max(deflection(padGetStickPos(&nx, 0)), deflection(padGetStickPos(&nx, 1)));
+            s.guitarWhammy = std::clamp(float(padGetStickPos(&nxGuitar, 1).x) / JOYSTICK_MAX, 0.0f, 1.0f);
             const uint64_t down = (s.standard | s.guitar) & watched;
             const bool rising = (down & ~previous) != 0;
             previous = down;
@@ -349,7 +358,8 @@ class Controller {
     }
     // `pressedAt` receives when this frame's earliest new press arrived, on the
     // now() clock, or stays negative when the input layer cannot say.
-    uint64_t read(bool wiiGuitar, bool playing, double *pressedAt = nullptr) {
+    // `whammy` receives the whammy bar or stick position, 0 at rest to 1.
+    uint64_t read(bool wiiGuitar, bool playing, double *pressedAt = nullptr, float *whammy = nullptr) {
         uint64_t out = 0;
 #ifdef __SWITCH__
         Snapshot s;
@@ -364,6 +374,8 @@ class Controller {
         }
         guitarConnected = s.guitarOn;
         guitarInput = exclusiveGuitarInput(wiiGuitar, playing, guitarConnected);
+        if (whammy)
+            *whammy = guitarInput ? s.guitarWhammy : s.standardStick;
         // Plus and Minus always answer from the normal controller.
         auto h = controllerButtons(wiiGuitar, playing, guitarConnected, s.standard, s.guitar,
                                    HidNpadButton_Plus | HidNpadButton_Minus);
@@ -383,6 +395,15 @@ class Controller {
         if (pressedAt)
             *pressedAt = -1; // desktop presses are stamped from SDL events instead
         connect();
+        if (whammy) {
+            *whammy = 0;
+            if (pad)
+                for (auto [x, y] : {std::pair{SDL_CONTROLLER_AXIS_LEFTX, SDL_CONTROLLER_AXIS_LEFTY},
+                                    std::pair{SDL_CONTROLLER_AXIS_RIGHTX, SDL_CONTROLLER_AXIS_RIGHTY}})
+                    *whammy = std::max(*whammy, std::min(1.0f, std::hypot(float(SDL_GameControllerGetAxis(pad, x)),
+                                                                         float(SDL_GameControllerGetAxis(pad, y))) /
+                                                                  32767.0f));
+        }
         if (pad) {
             for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; ++b)
                 if (SDL_GameControllerGetButton(pad, SDL_GameControllerButton(b)))
@@ -565,7 +586,13 @@ void highway(const Song &song, const Session &session, const Settings &settings,
                 if (n.end[l] <= time || n.end[l] <= n.time || head <= tail)
                     continue;
                 const bool holding = state.result == 1 && (state.held & (1 << l));
+                // A whammied sustain bends harder; on a star phrase it glows
+                // star-power blue while it fills the meter.
+                const bool bending = holding && session.whammying(session.lastTime);
+                const bool charging = bending && session.whammyable(idx);
                 SDL_Color c = state.result < 0 ? SDL_Color{110, 112, 124, 255} : power ? ink::power : lanes[size_t(l)];
+                if (charging)
+                    c = mix(c, ink::power, .6f);
                 float lane = l == 5 ? 2.5f : l + .5f;
                 auto tube = [&](float scale, SDL_Color col) {
                     static std::vector<SDL_Vertex> v;
@@ -575,7 +602,9 @@ void highway(const Song &song, const Session &session, const Settings &settings,
                     for (int j = 0; j <= steps; ++j) {
                         float ty = head + (tail - head) * j / steps;
                         float depth = (ty - top) / (bottom - top);
-                        float sway = holding ? std::sin(ty * .07f - float(ui) * 16) * 4 * depth : 0;
+                        float sway = bending   ? std::sin(ty * .11f - float(ui) * 30) * 9 * depth
+                                     : holding ? std::sin(ty * .07f - float(ui) * 16) * 4 * depth
+                                               : 0;
                         float cx = xx(lane, ty) + sway, half = (2 + 6 * depth) * scale;
                         v.push_back({{cx - half, ty}, col, {0, 0}});
                         v.push_back({{cx + half, ty}, col, {0, 0}});
@@ -1469,8 +1498,9 @@ int main(int argc, char **argv) {
                 SDL_JoystickUpdate();
             }
             const bool wasConnected = controller.connected();
+            float whammyInput = 0;
             uint64_t buttons = controller.read(settings.wiiGuitar, screen == Screen::Playing || screen == Screen::Calibrate,
-                                               &pressedAtSeconds),
+                                               &pressedAtSeconds, &whammyInput),
                      pressed = buttons & ~previousButtons;
             if (wasConnected && !controller.connected() && screen == Screen::Playing) {
                 frozen = audio.position() - song->offset;
@@ -2057,6 +2087,10 @@ int main(int argc, char **argv) {
                 } else {
                     if (press(3) || key(SDL_SCANCODE_LSHIFT))
                         session->activate();
+                    // On a keyboard, holding W wobbles a virtual bar.
+                    if (keys[SDL_SCANCODE_W])
+                        whammyInput = float(.5 + .5 * std::sin(now() * 25));
+                    session->whammy(whammyInput, time);
                     session->update(time, frets, up || down || press(1) || key(SDL_SCANCODE_SPACE),
                                     press(1) || key(SDL_SCANCODE_SPACE), pressTime(time));
                     if (time < 0) {
@@ -3112,6 +3146,8 @@ int main(int argc, char **argv) {
                             "x" + std::to_string(session->multiplier()));
                 }
                 text(940, 372, "STAR POWER", stencil(20, ink::dim, ink::faint));
+                if (const float fill = decay(time - session->lastWhammyGain, .25); fill > 0)
+                    glow(1056, 414, 300, 80, alpha(ink::power, .5f * fill)); // the bar is filling from a whammy
                 ledMeter(940, 404, 232, 20, 12, float(session->power), session->powerActive, ui);
                 if (session->powerActive)
                     text(940, 442, tr("BURNING"), marker(24, ink::power, -2));

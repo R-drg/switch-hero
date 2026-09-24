@@ -62,6 +62,7 @@ SD root. Put the NRO in `sd:/switch/switch-hero/` and reboot Atmosphere.
 | Stick left/right | No scoring action | Track selection / setting adjustment |
 | Plus | Pause/resume | Resume when paused |
 | Minus | Star power | No action |
+| Whammy bar | Fills star power on star sustains | No action |
 | Wii Remote A / 1 / Minus | A also strums; Minus pauses | Confirm / settings or restart / back |
 
 Guitar mode only takes over player one while a controller is actually connected
@@ -77,10 +78,11 @@ the game at all — check that the patched module above is installed, that
 `enable_motion=false`, and that the remote is assigned to player one.
 
 Transport mapping is green=L, red=ZL, yellow=R, blue=ZR, orange=B,
-strum=D-pad up/down, stick=D-pad left/right, Plus=Plus, guitar Minus=X.
+strum=D-pad up/down, stick=D-pad left/right, Plus=Plus, guitar Minus=X,
+whammy=right stick X (centred at rest, full right when pushed down).
 Only joystick horizontal movement is mapped, so moving the stick vertically
-cannot accidentally strum. Tilt, whammy effects, and the World Tour touch strip
-are not implemented. The game pauses on a controller disconnect. Extension
+cannot accidentally strum. Tilt and the World Tour touch strip are not
+implemented. The game pauses on a controller disconnect. Extension
 changes clear MissionControl's cached state so removed frets do not remain held.
 
 ## MotionPlus and guitars

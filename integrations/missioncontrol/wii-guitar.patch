@@ -1,5 +1,5 @@
 diff --git a/mc_mitm/source/controllers/wii_controller.cpp b/mc_mitm/source/controllers/wii_controller.cpp
-index 3580031..c88b5a4 100644
+index 3580031..676b36a 100644
 --- a/mc_mitm/source/controllers/wii_controller.cpp
 +++ b/mc_mitm/source/controllers/wii_controller.cpp
 @@ -14,6 +14,7 @@
@@ -35,7 +35,7 @@ index 3580031..c88b5a4 100644
              case WiiExtensionController_TaTaCon:
                  this->MapTaTaConExtension(ext); break;
              case WiiExtensionController_BalanceBoard:
-@@ -241,6 +253,21 @@ namespace ams::controller {
+@@ -241,6 +253,26 @@ namespace ams::controller {
          }
      }
  
@@ -52,12 +52,17 @@ index 3580031..c88b5a4 100644
 +        m_buttons.dpad_right = guitar.right;
 +        m_buttons.plus |= guitar.plus;
 +        m_buttons.X = guitar.minus;
++        // Whammy on the right stick's X axis: centred at rest, full right when pushed down.
++        m_right_stick.SetData(
++            static_cast<u16>(SwitchAnalogStick::Center + guitar.whammy * (SwitchAnalogStick::Max - SwitchAnalogStick::Center)) & UINT12_MAX,
++            SwitchAnalogStick::Center
++        );
 +    }
 +
      void WiiController::MapNunchuckExtension(const u8 ext[]) {
          auto extension_data = reinterpret_cast<const WiiNunchuckExtensionData *>(ext);
  
-@@ -455,26 +482,35 @@ namespace ams::controller {
+@@ -455,26 +487,35 @@ namespace ams::controller {
                      mp_status = this->GetMotionPlusStatus();
  
                      if (!((mp_status == MotionPlusStatus_None) || (mp_status == MotionPlusStatus_Active))) {
@@ -99,7 +104,7 @@ index 3580031..c88b5a4 100644
                          case WiiExtensionController_TaTaCon:
                              m_orientation = WiiControllerOrientation_Vertical;
                              R_TRY(this->SetReportMode(0x35));
-@@ -492,8 +528,19 @@ namespace ams::controller {
+@@ -492,8 +533,19 @@ namespace ams::controller {
                              m_orientation = WiiControllerOrientation_Horizontal;
                              R_TRY(this->SetReportMode(0x35));
                              break;
@@ -120,7 +125,7 @@ index 3580031..c88b5a4 100644
                              m_orientation = WiiControllerOrientation_Vertical;
                              R_TRY(this->SetReportMode(0x35));
                              break;
-@@ -517,6 +564,12 @@ namespace ams::controller {
+@@ -517,6 +569,12 @@ namespace ams::controller {
                              // Set appropriate passthrough MotionPlus mode
                              if (extension == WiiExtensionController_Nunchuck) {
                                  R_TRY(this->ActivateMotionPlusNunchuckPassthrough());
@@ -133,7 +138,7 @@ index 3580031..c88b5a4 100644
                              } else {
                                  R_TRY(this->ActivateMotionPlusClassicPassthrough());
                              }
-@@ -546,10 +599,21 @@ namespace ams::controller {
+@@ -546,10 +604,21 @@ namespace ams::controller {
              MC_RUN_ASYNC (
                  auto mp_status = this->GetMotionPlusStatus();
  
@@ -156,7 +161,7 @@ index 3580031..c88b5a4 100644
                  } else {
                      if (mp_status == MotionPlusStatus_Uninitialised) {
                          R_TRY(this->InitializeMotionPlus());
-@@ -584,6 +648,8 @@ namespace ams::controller {
+@@ -584,6 +653,8 @@ namespace ams::controller {
                      return WiiExtensionController_MotionPlusNunchuckPassthrough;
                  case 0xA4200705:
                      return WiiExtensionController_MotionPlusClassicControllerPassthrough;
