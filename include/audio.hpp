@@ -50,6 +50,9 @@ class Audio {
     bool guitarStem = false;
     std::string failure;
     double leadIn = 2.0, totalDuration = 0;
+    // Where in the song the streams started: position() counts from here.
+    double base = 0;
+    void prime();
     uint64_t generated = 0;
     void fail(const std::string &message);
     // `prime` waits for the mixer to buffer the start, which song timing needs
@@ -66,6 +69,13 @@ class Audio {
     // effects work from here on, with or without a song loaded.
     void start();
     void load(const Song &song);
+    // Practice: the song from `audioSeconds` in, after `lead` seconds of
+    // silence. position() then runs from audioSeconds - lead.
+    void loadAt(const Song &song, double audioSeconds, double lead);
+    // Starts the loaded song again from `audioSeconds`, seeking the open
+    // streams rather than reopening them, so a practice loop restarts at once.
+    // Leaves it paused, like load().
+    void rewind(double audioSeconds, double lead);
     // Plays the song from `startSeconds` with no lead-in, for the song list's
     // preview. Nothing is judged against it, so it has no count-in.
     void preview(const Song &song, double startSeconds);

@@ -64,6 +64,23 @@ int main(int argc, char **argv) {
             a.load(song);
             if (std::abs(a.position() + 2) > .001)
                 throw std::runtime_error("Restart does not reset clock");
+            // Practice: the clock runs from the start point minus the lead-in,
+            // and a rewind puts it back there without reloading.
+            a.loadAt(song, .6, .5);
+            if (std::abs(a.position() - .1) > .001)
+                throw std::runtime_error("loadAt clock should start at start - lead");
+            a.pause(false);
+            SDL_Delay(120);
+            if (a.position() <= .1 + .05)
+                throw std::runtime_error("loadAt clock did not advance");
+            a.rewind(.3, .25);
+            if (std::abs(a.position() - .05) > .001 || !a.isPaused())
+                throw std::runtime_error("rewind should reset the clock and pause");
+            a.pause(false);
+            SDL_Delay(120);
+            if (a.position() <= .05 + .05)
+                throw std::runtime_error("clock did not advance after rewind");
+            a.pause(true);
             // A preview has no count-in and starts playing straight away.
             a.preview(song, .5);
             if (std::abs(a.position()) > .05)

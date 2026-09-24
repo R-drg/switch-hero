@@ -906,6 +906,39 @@ void Audio::load(const Song &song) {
     songGain = 1;
     loadStreams(song, std::max(2.0, 2.0 - song.offset), 0, true);
 }
+void Audio::loadAt(const Song &song, double audioSeconds, double lead) {
+    songGain = 1;
+    loadStreams(song, lead, std::max(0.0, audioSeconds), true);
+    base = std::max(0.0, audioSeconds);
+}
+void Audio::rewind(double audioSeconds, double lead) {
+    audioSeconds = std::max(0.0, audioSeconds);
+    if (engine) {
+        engine->songActive = false;
+        engine->setPaused(true);
+        engine->resetSong();
+    }
+    paused = true;
+    {
+        std::lock_guard<std::mutex> lock(streamMutex);
+        for (auto &stream : streams) {
+            stream->decoder->seek(audioSeconds);
+            // Drop what was decoded before the seek, as a fresh stream would.
+            stream->available = stream->cursor = 0;
+            stream->phase = 0;
+            stream->a = stream->b = {0, 0};
+            stream->primed = stream->ended = false;
+        }
+        generated = 0;
+        leadIn = lead;
+        base = audioSeconds;
+    }
+    duckGuitar = false;
+    if (streams.empty() || !engine)
+        return;
+    engine->songActive = true;
+    prime();
+}
 struct Audio::Prepared {
     std::vector<std::unique_ptr<Stream>> streams;
     double duration = 0;
@@ -930,7 +963,7 @@ void Audio::playPrepared(std::shared_ptr<Prepared> prepared) {
         std::lock_guard<std::mutex> lock(errorMutex);
         failure.clear();
     }
-    leadIn = 0;
+    leadIn = 0, base = 0;
     totalDuration = prepared->duration;
     guitarStem = false, duckGuitar = false, silent = false;
     for (auto &stream : prepared->streams)
@@ -955,6 +988,7 @@ void Audio::loadStreams(const Song &song, double lead, double startSeconds, bool
         failure.clear();
     }
     leadIn = lead;
+    base = 0;
     totalDuration = song.duration + song.offset + 2;
     std::vector<std::unique_ptr<Stream>> loaded;
     bool anyGuitar = false;
@@ -981,8 +1015,13 @@ void Audio::loadStreams(const Song &song, double lead, double startSeconds, bool
         generated = 0;
     }
     engine->songActive = true;
-    // Prime before playback so slow storage cannot consume the initial silence early.
-    for (int i = 0; prime && i < 1000; ++i) {
+    if (prime)
+        this->prime();
+}
+// Waits for the mixer to buffer the start, so slow storage cannot eat into the
+// lead-in silence before the song clock starts.
+void Audio::prime() {
+    for (int i = 0; i < 1000; ++i) {
         {
             std::lock_guard<std::mutex> lock(engine->mutex);
             if (engine->songSubmitted >= 4096)
@@ -1028,7 +1067,7 @@ void Audio::loadClicks(double bpm) {
         std::lock_guard<std::mutex> lock(errorMutex);
         failure.clear();
     }
-    leadIn = 1;
+    leadIn = 1, base = 0;
     totalDuration = 1e9;
     songGain = 1;
     guitarStem = false;
@@ -1049,8 +1088,8 @@ void Audio::pause(bool v) {
 }
 double Audio::position() const {
     if (!engine || !engine->songActive)
-        return -leadIn;
-    return engine->songSeconds() - leadIn;
+        return base - leadIn;
+    return engine->songSeconds() - leadIn + base;
 }
 std::string Audio::error() const {
     if (!failed)
