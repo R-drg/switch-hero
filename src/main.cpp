@@ -103,6 +103,7 @@ struct Settings {
     int language = -1;
     // Indexes into highwayThemes and look::palettes().
     int highway = 0, palette = 0;
+    bool rumble = true;
     void load(const fs::path &path) {
         std::ifstream f(path);
         std::string line;
@@ -134,6 +135,8 @@ struct Settings {
                 lefty = v != 0;
             if (k == "timing_overlay")
                 timingOverlay = v != 0;
+            if (k == "rumble")
+                rumble = v != 0;
             if (k == "sort_mode")
                 sortMode = whole(v, 0, 2);
             if (k == "hit_window")
@@ -176,7 +179,7 @@ struct Settings {
           << gamepad << "\nwii_guitar " << wiiGuitar << "\nno_fail " << noFail << "\npart " << part
           << "\ndifficulty " << difficulty << "\nlefty " << lefty << "\ntiming_overlay " << timingOverlay
           << "\nsort_mode " << sortMode << "\nhit_window " << hitWindow << "\nmusic_volume " << musicVolume
-          << "\nsfx_volume " << sfxVolume << "\nhighway " << highway << "\npalette " << palette << '\n';
+          << "\nsfx_volume " << sfxVolume << "\nhighway " << highway << "\npalette " << palette << "\nrumble " << rumble << '\n';
         if (language >= 0)
             f << "language " << language << '\n';
         if (!lastSong.empty())
@@ -291,13 +294,40 @@ class Controller {
             svcSleepThread(1'000'000);
         }
     }
+    // Rumble. On the console each controller layout has its own vibration
+    // handles; a pulse goes to whichever layouts are connected.
+    HidVibrationDeviceHandle handheldMotors[2]{}, dualMotors[2]{}, proMotors[1]{};
+    bool motors = false;
+    void vibrate(float low, float high) {
+        const uint32_t style = [&] {
+            std::lock_guard<std::mutex> lock(mutex);
+            return snap.standardStyle | snap.guitarStyle;
+        }();
+        HidVibrationValue v[2];
+        for (auto &x : v)
+            x = {low, 160, high, 320};
+        if (style & HidNpadStyleTag_NpadHandheld)
+            hidSendVibrationValues(handheldMotors, v, 2);
+        if (style & HidNpadStyleTag_NpadJoyDual)
+            hidSendVibrationValues(dualMotors, v, 2);
+        if (style & HidNpadStyleTag_NpadFullKey)
+            hidSendVibrationValues(proMotors, v, 1);
+    }
 #endif
+    double rumbleUntil = 0;
+
   public:
     Controller() {
 #ifdef __SWITCH__
         padConfigureInput(1, HidNpadStyleSet_NpadStandard);
         padInitializeDefault(&nx);
         padInitialize(&nxGuitar, HidNpadIdType_No1);
+        motors = R_SUCCEEDED(hidInitializeVibrationDevices(handheldMotors, 2, HidNpadIdType_Handheld,
+                                                           HidNpadStyleTag_NpadHandheld));
+        motors = R_SUCCEEDED(hidInitializeVibrationDevices(dualMotors, 2, HidNpadIdType_No1,
+                                                           HidNpadStyleTag_NpadJoyDual)) || motors;
+        motors = R_SUCCEEDED(hidInitializeVibrationDevices(proMotors, 1, HidNpadIdType_No1,
+                                                           HidNpadStyleTag_NpadFullKey)) || motors;
         poller = std::thread([this] { poll(); });
 #else
         connect();
@@ -328,6 +358,32 @@ class Controller {
                 pad = SDL_GameControllerOpen(i);
                 break;
             }
+#endif
+    }
+    // A buzz of `strength` (0 to 1) for `seconds`; update() ends it.
+    void rumble(float strength, double seconds) {
+        const double t = double(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency();
+        rumbleUntil = t + seconds;
+#ifdef __SWITCH__
+        if (motors)
+            vibrate(strength * .6f, strength);
+#else
+        if (pad)
+            SDL_GameControllerRumble(pad, Uint16(strength * .6f * 0xffff), Uint16(strength * 0xffff),
+                                     Uint32(seconds * 1000));
+#endif
+    }
+    // Stops a finished buzz. Call once a frame.
+    void updateRumble() {
+        if (rumbleUntil <= 0)
+            return;
+        const double t = double(SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency();
+        if (t < rumbleUntil)
+            return;
+        rumbleUntil = 0;
+#ifdef __SWITCH__
+        if (motors)
+            vibrate(0, 0);
 #endif
     }
     // Live view of both input sources for the controller test panel.
@@ -675,6 +731,8 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         float lane = side ? 5.0f : 0.0f, dir = xx(lane, top) > 640 ? 1.0f : -1.0f;
         SDL_Color hot = power ? ink::power : theme.railHot;
         SDL_Color far = theme.railFar;
+        if (!power && session.activeSolo(time) >= 0) // solos light the rails blue, as in the originals
+            hot = mix(hot, {70, 170, 255, 255}, .8f), far = mix(far, {20, 50, 110, 255}, .6f);
         if (theme.effects & Hazard) {
             // Painted warning stripes, scrolling with the board.
             const int segments = 48;
@@ -713,6 +771,8 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         // apart for readability made them snap back into place mid-board.
         const float y = yy(n.time);
         const auto state = session.state[idx];
+        if (state.skipped)
+            continue; // before a practice loop: never drawn
         // Sustains: neon tubing that wavers while it is being held down.
         for (int l = 0; l < 6; ++l)
             if (n.mask & (1 << l)) {
@@ -1019,7 +1079,7 @@ void menu(float cx, float y, float spacing, const std::vector<std::string> &item
 
 // The options screens: a short list of categories, each opening its own page,
 // so every setting sits under a name that says what it is for.
-enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language, Highway, Palette };
+enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language, Highway, Palette, Rumble };
 struct OptionRow {
     Opt id;
     int fret = 0;
@@ -1066,6 +1126,8 @@ std::vector<OptionRow> optionRows(int page, const Settings &s, bool confirmReset
                         true});
         rows.push_back({Opt::Lefty, 0, tr("Lefty flip"), tr(s.lefty ? "ON" : "OFF"),
                         tr("Mirrors the highway so green is on the right, for left-handed players."), true});
+        rows.push_back({Opt::Rumble, 0, tr("Rumble"), tr(s.rumble ? "ON" : "OFF"),
+                        tr("A buzz when you miss, a pulse when star power kicks in, a double tap after a solo."), true});
     } else if (page == 1) {
         auto meter = [](int v) { return std::string(size_t(v), '|') + std::string(size_t(10 - v), '.'); };
         rows.push_back({Opt::Music, 0, tr("Music volume"), meter(s.musicVolume) + "  " + std::to_string(s.musicVolume * 10) + "%",
@@ -1331,6 +1393,9 @@ int main(int argc, char **argv) {
         // results screen, where the player notices it, rather than sending them
         // back to calibration. 0 when there is nothing worth fixing.
         int offsetTip = 0;
+        // The results screen's section breakdown, worked out once per run.
+        std::vector<SectionStat> resultSections;
+        bool showSections = false;
         bool offsetTipApplied = false;
         SDL_Joystick *virtualPad = nullptr;
         if (smoke) {
@@ -1361,7 +1426,7 @@ int main(int argc, char **argv) {
             settings.wiiGuitar = true;
         Audio audio;
         audio.start(); // interface sounds work from the song list onward
-        enum class Screen { Language, Main, Library, Select, Playing, Paused, Countdown, Results, Settings, Calibrate, Download };
+        enum class Screen { Language, Main, Library, Select, Playing, Paused, Countdown, Results, Settings, Calibrate, Download, Sections };
         // The first start asks for a language before anything else.
         Screen screen = settings.language < 0 ? Screen::Language : Screen::Main;
         int languageRow = int(lang::current());
@@ -1678,23 +1743,64 @@ int main(int argc, char **argv) {
                     install(std::move(l));
             }
         };
+        // Automatic practice chunks are named "Part N" by the core; translate those.
+        auto sectionName = [](const std::string &name) {
+            return name.rfind("Part ", 0) == 0 ? tr("Part {}", name.substr(5)) : name;
+        };
+        // Practice mode: a chosen run of sections, looped. `runStart` is where
+        // the count-in counts down to: 0 for a whole song, the section otherwise.
+        bool practiceMode = false;
+        std::vector<Section> practiceList;
+        size_t practiceFirst = 0, practiceLast = 0;
+        int practiceStep = 0; // 0 choosing the first section, 1 the last
+        size_t sectionRow = 0;
+        double practiceFrom = 0, practiceTo = 0, runStart = 0;
+        int practiceLoops = 0, lastLoopPct = -1;
+        std::map<std::string, std::pair<size_t, size_t>> practiceMemory; // by song folder, this session
+        constexpr double practicePreroll = 2.0, practiceLead = .6;
+        // Where the audio restarts for a loop, and the silence before it.
+        auto practiceAudio = [&](double &lead) {
+            double at = practiceFrom - practicePreroll + song->offset;
+            lead = practiceLead;
+            if (at < 0)
+                lead -= at, at = 0;
+            return at;
+        };
+        // The solo call-out's second line ("+2,300"), and the last solo shown.
+        std::string calloutSub;
+        double shownSoloAt = -1e9, lastMissRumble = -1e9;
+        // Fresh run state shared by a whole song and each practice loop.
+        auto newRun = [&]() {
+            session = std::make_unique<Session>(*song, song->tracks[trackIndex]);
+            session->gamepadMode = settings.gamepad && !settings.wiiGuitar;
+            session->noFail = settings.noFail || practiceMode;
+            session->window = Session::windowFor(session->track->difficulty, settings.hitWindow);
+            if (practiceMode)
+                session->startAt(practiceFrom);
+            callout.clear(), calloutSub.clear(), calloutAt = -1, milestone = 0, wasPower = false;
+            shownMisses = 0, shownCount = -1, shownScore = 0, shownMultiplier = 1, shownSoloAt = -1e9;
+        };
         auto start = [&]() {
             if (!song)
                 return;
             try {
                 look::prepareGems();
-                audio.load(*song);
-                session = std::make_unique<Session>(*song, song->tracks[trackIndex]);
-                session->gamepadMode = settings.gamepad && !settings.wiiGuitar;
-                session->noFail = settings.noFail;
-                session->window = Session::windowFor(session->track->difficulty, settings.hitWindow);
+                if (practiceMode) {
+                    double lead;
+                    const double at = practiceAudio(lead);
+                    audio.loadAt(*song, at, lead);
+                    runStart = practiceFrom;
+                    practiceLoops = 0, lastLoopPct = -1;
+                } else {
+                    audio.load(*song);
+                    runStart = 0;
+                }
+                newRun();
                 previewActive = false, previewFolder.clear(); // load() replaced the preview
                 settings.lastSong = song->folder.filename().string();
                 audio.pause(false);
                 restartClock();
-                callout.clear(), calloutAt = -1, milestone = 0, wasPower = false;
                 newBest = false, previousBest = -1;
-                shownMisses = 0, shownCount = -1, shownScore = 0, shownMultiplier = 1;
                 screen = Screen::Playing;
                 message.clear();
             } catch (const std::exception &e) {
@@ -1719,7 +1825,35 @@ int main(int argc, char **argv) {
             message.clear();
             screen = Screen::Select;
         };
-        loadSelected();
+        // Practice: the next loop starts at once from the open streams.
+        auto restartLoop = [&]() {
+            double lead;
+            const double at = practiceAudio(lead);
+            audio.rewind(at, lead);
+            newRun();
+            audio.pause(false);
+            restartClock();
+            screen = Screen::Playing;
+        };
+        auto openSections = [&]() {
+            practiceList = practiceSections(*song);
+            const auto remembered = practiceMemory.find(song->folder.string());
+            if (remembered != practiceMemory.end() && remembered->second.second < practiceList.size())
+                practiceFirst = remembered->second.first, practiceLast = remembered->second.second;
+            else
+                practiceFirst = practiceLast = 0;
+            sectionRow = practiceFirst, practiceStep = 0;
+            message.clear();
+            screen = Screen::Sections;
+        };
+        // The title menu opens straight away; the selected chart loads in the
+        // background like any cursor move, so a big chart or a slow cover never
+        // holds the game on the finished loading screen. The smoke test plays
+        // at once, so it loads up front.
+        if (smoke)
+            loadSelected();
+        else
+            selectEntry();
         if (smoke) {
             if (!song)
                 throw std::runtime_error("Smoke test needs a valid song");
@@ -1798,6 +1932,7 @@ int main(int argc, char **argv) {
                 }
                 SDL_JoystickUpdate();
             }
+            controller.updateRumble();
             const bool wasConnected = controller.connected();
             float whammyInput = 0;
             uint64_t buttons = controller.read(settings.wiiGuitar, screen == Screen::Playing || screen == Screen::Calibrate,
@@ -1920,26 +2055,61 @@ int main(int argc, char **argv) {
                     screen = Screen::Main;
                 }
             } else if (screen == Screen::Main) {
-                // Quickplay, download, options, quit.
+                // Quickplay, practice, download, options, quit.
+                constexpr int quitRow = 4;
                 if (up || down) {
-                    mainRow = (mainRow + 4 + (down ? 1 : -1)) % 4;
+                    mainRow = (mainRow + quitRow + 1 + (down ? 1 : -1)) % (quitRow + 1);
                     audio.playSfx(Sfx::Move);
                 }
                 // Back walks to Quit rather than quitting, so mashing back never exits.
-                if (back && mainRow != 3) {
-                    mainRow = 3;
+                if (back && mainRow != quitRow) {
+                    mainRow = quitRow;
                     audio.playSfx(Sfx::Move);
-                } else if (accept || (back && mainRow == 3)) {
-                    if (mainRow == 0) {
+                } else if (accept || (back && mainRow == quitRow)) {
+                    if (mainRow <= 1) {
+                        // Practice picks a song the same way, then its sections.
+                        practiceMode = mainRow == 1;
                         audio.playSfx(Sfx::Select, .7f);
                         message.clear();
                         screen = Screen::Library;
-                    } else if (mainRow == 1)
+                    } else if (mainRow == 2)
                         openDownloads();
-                    else if (mainRow == 2)
+                    else if (mainRow == 3)
                         openOptions();
                     else
                         running = false;
+                }
+            } else if (screen == Screen::Sections) {
+                // Choose where the loop starts, then where it ends.
+                const size_t n = practiceList.size();
+                const size_t lowest = practiceStep == 1 ? practiceFirst : 0;
+                if (n && up && sectionRow > lowest) {
+                    --sectionRow;
+                    audio.playSfx(Sfx::Move);
+                }
+                if (n && down && sectionRow + 1 < n) {
+                    ++sectionRow;
+                    audio.playSfx(Sfx::Move);
+                }
+                if (accept && n) {
+                    if (practiceStep == 0) {
+                        practiceFirst = practiceLast = sectionRow;
+                        practiceStep = 1;
+                        audio.playSfx(Sfx::Select, .7f);
+                    } else {
+                        practiceLast = sectionRow;
+                        practiceMemory[song->folder.string()] = {practiceFirst, practiceLast};
+                        practiceFrom = practiceList[practiceFirst].time;
+                        practiceTo = practiceLast + 1 < n ? practiceList[practiceLast + 1].time : song->duration;
+                        audio.playSfx(Sfx::Select);
+                        start();
+                    }
+                } else if (back) {
+                    audio.playSfx(Sfx::Back);
+                    if (practiceStep == 1)
+                        practiceStep = 0, sectionRow = practiceFirst;
+                    else
+                        screen = Screen::Select, selectStep = 1;
                 }
             } else if (screen == Screen::Library && confirmDelete) {
                 if (up || down || left || right) {
@@ -2103,7 +2273,10 @@ int main(int argc, char **argv) {
                                 SDL_Log("Switch Hero: %s", e.what());
                             }
                             audio.playSfx(Sfx::Select);
-                            start();
+                            if (practiceMode)
+                                openSections();
+                            else
+                                start();
                         }
                     } else if (back) {
                         audio.playSfx(Sfx::Back);
@@ -2317,6 +2490,15 @@ int main(int argc, char **argv) {
                         // Right is faster, which is a shorter trip down the board.
                         settings.travel = std::clamp(settings.travel - delta * 0.05, 0.75, 3.0);
                         break;
+                    case Opt::Rumble:
+                        if (delta || accept) {
+                            settings.rumble = !settings.rumble;
+                            if (settings.rumble)
+                                controller.rumble(.7f, .25); // so the player feels what they turned on
+                            if (accept)
+                                audio.playSfx(Sfx::Toggle, .8f);
+                        }
+                        break;
                     case Opt::Lefty:
                         if (delta || accept) {
                             settings.lefty = !settings.lefty;
@@ -2429,9 +2611,9 @@ int main(int argc, char **argv) {
                     session->whammy(whammyInput, time);
                     session->update(time, frets, up || down || press(1) || key(SDL_SCANCODE_SPACE),
                                     press(1) || key(SDL_SCANCODE_SPACE), pressTime(time));
-                    if (time < 0) {
-                        // Count the song in with drumstick clicks.
-                        const int count = int(std::ceil(-time));
+                    if (time < runStart) {
+                        // Count the song (or the practice loop) in with drumstick clicks.
+                        const int count = int(std::ceil(runStart - time));
                         if (count != shownCount) {
                             shownCount = count;
                             audio.playSfx(Sfx::Count, .8f);
@@ -2444,6 +2626,10 @@ int main(int argc, char **argv) {
                             audio.playSfx(Sfx::Miss, .75f);
                             lastMissSound = now();
                         }
+                        if (settings.rumble && now() - lastMissRumble > .15) {
+                            controller.rumble(.35f, .06);
+                            lastMissRumble = now();
+                        }
                         shownMisses = session->misses;
                     }
                     // Shout out long streaks and star power, the moments worth celebrating.
@@ -2455,10 +2641,24 @@ int main(int argc, char **argv) {
                     } else if (session->combo < milestone * 50)
                         milestone = session->combo / 50;
                     if (session->powerActive && !wasPower) {
-                        callout = "STAR POWER!";
+                        callout = "STAR POWER!", calloutSub.clear();
                         calloutAt = now();
                         powerFlashAt = now();
                         audio.playSfx(Sfx::StarPower);
+                        if (settings.rumble)
+                            controller.rumble(1, .35);
+                    }
+                    // A solo just ended: how much of it landed, and what it paid.
+                    if (session->lastSolo.at > shownSoloAt) {
+                        shownSoloAt = session->lastSolo.at;
+                        const auto &solo = session->lastSolo;
+                        const int pct = solo.total ? solo.hit * 100 / solo.total : 0;
+                        callout = pct == 100 ? std::string(tr("PERFECT SOLO!")) : tr("SOLO {}%", pct);
+                        calloutSub = "+" + grouped(int(solo.bonus));
+                        calloutAt = now();
+                        audio.playSfx(Sfx::Streak);
+                        if (settings.rumble)
+                            controller.rumble(.6f, .18);
                     }
                     wasPower = session->powerActive;
                     // Guitar cuts out while the meter is in the red, as in the originals.
@@ -2473,7 +2673,13 @@ int main(int argc, char **argv) {
                         audio.pause(true);
                         screen = Screen::Paused;
                         message = e;
-                    } else if (audio.position() > audio.duration() + 0.3) {
+                    } else if (practiceMode && (time > practiceTo + .4 || audio.position() > audio.duration() + 0.3)) {
+                        // End of the loop: note how it went and go round again.
+                        const int judged = session->hits + session->misses;
+                        lastLoopPct = judged ? session->hits * 100 / judged : 100;
+                        ++practiceLoops;
+                        restartLoop();
+                    } else if (!practiceMode && audio.position() > audio.duration() + 0.3) {
                         audio.pause(true);
                         audio.playSfx(Sfx::Win);
                         frozen = time;
@@ -2515,11 +2721,17 @@ int main(int argc, char **argv) {
                     }
                 } else if (accept && pauseRow == 1) {
                     audio.playSfx(Sfx::Select);
-                    start();
+                    if (practiceMode)
+                        restartLoop();
+                    else
+                        start();
                 } else if (accept && pauseRow == 2) {
                     audio.stop();
                     audio.playSfx(Sfx::Select, .7f);
-                    openSelect(false);
+                    if (practiceMode)
+                        openSections();
+                    else
+                        openSelect(false);
                 } else if (accept && pauseRow == 3) {
                     audio.stop();
                     audio.playSfx(Sfx::Back);
@@ -2572,6 +2784,10 @@ int main(int argc, char **argv) {
                 // B is the orange fret. Presses aimed at the song must not land on
                 // this menu and throw the results away, so it waits a moment.
             } else if (screen == Screen::Results) {
+                if (secondary && !resultSections.empty()) {
+                    showSections = !showSections;
+                    audio.playSfx(Sfx::Toggle);
+                }
                 // Continue, retry, change difficulty.
                 if (up || down) {
                     const int rows = offsetTip ? 4 : 3;
@@ -2733,6 +2949,8 @@ int main(int argc, char **argv) {
                     pauseRow = 0;
                 if (screen == Screen::Results) {
                     resultRow = 0, offsetTip = 0, offsetTipApplied = false;
+                    showSections = false;
+                    resultSections = sectionStats(*song, *session);
                     // The median of the hits' timing errors: one fluffed note
                     // cannot drag it, and it needs enough hits to mean anything.
                     std::vector<double> errors;
@@ -2795,8 +3013,10 @@ int main(int argc, char **argv) {
                     s.align = Align::Center;
                     text(930, 592, tr(entries.size() == 1 ? "{} SONG" : "{} SONGS", entries.size()), s);
                 }
-                menu(330, 364, 66, {tr("QUICKPLAY"), tr("DOWNLOAD SONGS"), tr("OPTIONS"), tr("QUIT")}, mainRow, ui, 400, 32);
-                static const char *const blurbs[] = {"pick a song from your library", "grab charts from chorus encore",
+                menu(330, 344, 58, {tr("QUICKPLAY"), tr("PRACTICE"), tr("DOWNLOAD SONGS"), tr("OPTIONS"), tr("QUIT")}, mainRow,
+                     ui, 400, 30);
+                static const char *const blurbs[] = {"pick a song from your library", "loop a section until you nail it",
+                                                     "grab charts from chorus encore",
                                                      "controls, calibration and gameplay", "back to the homebrew menu"};
                 auto blurb = body(18, ink::dim);
                 blurb.align = Align::Center;
@@ -2809,6 +3029,63 @@ int main(int argc, char **argv) {
                     version.align = Align::Right;
                     text(1236, 684, "v" SWITCH_HERO_VERSION, version);
                 }
+            } else if (screen == Screen::Sections && song) {
+                wall(ui, ink::crt);
+                text(58, 24, tr("PRACTICE"), stencil(60, ink::chrome, {116, 122, 138, 255}));
+                {
+                    const auto &track = song->tracks[trackIndex];
+                    auto sub = marker(26, {198, 200, 212, 255}, -2);
+                    sub.maxWidth = 760;
+                    text(72, 104,
+                         plainTitle(song->name) + "  /  " + tr(track.instrument) + " " + tr(difficultyName(track.difficulty)),
+                         sub);
+                }
+                photo(albumArt, 250, 380, 250, -7 + hash01(uint32_t(selected) * 977) * 5);
+                burnedCd(372, 350, 142, ui);
+                plate(600, 150, 620, 480);
+                text(630, 170, tr(practiceStep == 0 ? "Pick where the loop starts." : "Pick where the loop ends."),
+                     body(18, ink::dim));
+                const size_t n = practiceList.size();
+                const int rows = 7;
+                const int first = std::clamp(int(sectionRow) - rows / 2, 0, std::max(0, int(n) - rows));
+                for (int i = 0; i < rows && first + i < int(n); ++i) {
+                    const size_t k = size_t(first + i);
+                    const float y = 214 + i * 50;
+                    const bool on = k == sectionRow;
+                    // While choosing the end, the loop so far is lit.
+                    const bool inLoop = practiceStep == 1 && k >= practiceFirst && k <= sectionRow;
+                    if (inLoop)
+                        rect(620, y - 8, 580, 46, alpha(ink::acid, .12f));
+                    if (on) {
+                        rect(620, y - 8, 580, 46, {0, 0, 0, 120});
+                        glow(640, y + 14, 34, 34, alpha(ink::acid, .8f));
+                    }
+                    disc(640, y + 14, 6, 6, on || inLoop ? ink::acid : SDL_Color{44, 46, 54, 255},
+                         on || inLoop ? mix(ink::acid, SDL_Color{0, 0, 0, 255}, .45f) : SDL_Color{26, 26, 32, 255});
+                    auto name = body(22, on ? ink::white : SDL_Color{200, 204, 214, 255});
+                    name.maxWidth = 400;
+                    text(664, y, sectionName(practiceList[k].name), name);
+                    auto at = body(16, ink::dim);
+                    at.align = Align::Right;
+                    text(1190, y + 4, timeText(practiceList[k].time), at);
+                    if (practiceStep == 1 && k == practiceFirst) {
+                        auto tag = marker(18, ink::acid, -2);
+                        tag.align = Align::Right;
+                        text(1130, y + 2, tr("start"), tag);
+                    }
+                }
+                if (first > 0)
+                    text(900, 186, "^", marker(24, ink::faint));
+                if (first + rows < int(n))
+                    text(900, 560, "v", marker(24, ink::faint));
+                if (practiceStep == 1 && n) {
+                    const double to = sectionRow + 1 < n ? practiceList[sectionRow + 1].time : song->duration;
+                    text(630, 594, tr("loop length {}", timeText(to - practiceList[practiceFirst].time)),
+                         body(18, ink::dim));
+                }
+                if (!message.empty())
+                    text(600, 640, message, marker(22, messageInk(), -1));
+                hints({{glyphAccept, tr(practiceStep == 0 ? "START HERE" : "END HERE")}, {glyphBack, tr("BACK")}});
             } else if (screen == Screen::Select && song) {
                 wall(ui, ink::crt);
                 const bool askingPart = selectStep == 0;
@@ -2898,8 +3175,8 @@ int main(int argc, char **argv) {
                      mode);
             } else if (screen == Screen::Library) {
                 wall(ui, ink::crt);
-                text(58, 24, "QUICKPLAY", stencil(74, ink::chrome, {116, 122, 138, 255}));
-                text(72, 110, "pick a track off the mixtape", marker(26, {198, 200, 212, 255}, -3));
+                text(58, 24, tr(practiceMode ? "PRACTICE" : "QUICKPLAY"), stencil(74, ink::chrome, {116, 122, 138, 255}));
+                text(72, 110, tr("pick a track off the mixtape"), marker(26, {198, 200, 212, 255}, -3));
                 text(470, 118, "\\m/", marker(34, {150, 152, 166, 255}, -14));
                 if (!entries.empty()) {
                     // Current order, on a strip of tape like a label on the case.
@@ -3594,8 +3871,22 @@ int main(int argc, char **argv) {
                     text(940, 442, tr("BURNING"), marker(24, ink::power, -2));
                 else if (session->power >= .5 && std::fmod(ui, 1.0) < .6)
                     text(940, 442, tr(settings.wiiGuitar ? "hit MINUS !" : "hit X !"), marker(24, ink::acid, -3));
-                // Rock meter: the tug of war that decides whether the set survives.
-                {
+                if (practiceMode) {
+                    // Practice cannot fail, so the loop takes the rock meter's place.
+                    plate(940, 480, 290, 118);
+                    text(962, 498, tr("PRACTICE"), stencil(20, ink::dim, ink::faint));
+                    std::string range = practiceList.empty() ? std::string() : sectionName(practiceList[practiceFirst].name);
+                    if (practiceLast != practiceFirst && practiceLast < practiceList.size())
+                        range += " - " + sectionName(practiceList[practiceLast].name);
+                    auto r = body(17, ink::white);
+                    r.maxWidth = 250;
+                    text(962, 524, range, r);
+                    text(962, 552,
+                         lastLoopPct < 0 ? tr("loop {}", practiceLoops + 1)
+                                         : tr("loop {}   last {}%", practiceLoops + 1, lastLoopPct),
+                         marker(22, ink::acid, -2));
+                } else {
+                    // Rock meter: the tug of war that decides whether the set survives.
                     const bool danger = session->inRed() && !session->noFail;
                     auto label = stencil(18, danger ? ink::blood : ink::dim, danger ? ink::blood : ink::faint);
                     label.align = Align::Center;
@@ -3621,16 +3912,33 @@ int main(int argc, char **argv) {
                 }
                 if (const float flash = decay(ui - powerFlashAt, .3); flash > 0)
                     rect(0, 0, W, H, {210, 240, 255, Uint8(150 * flash)});
-                if (time < 0) {
-                    // Each count lands with a thump.
-                    const float beat = float(std::ceil(-time) + time); // 0 at the flip, 1 just before
+                if (time < runStart) {
+                    // Each count lands with a thump, down to the song or the practice loop.
+                    const double left = runStart - time;
+                    const float beat = float(std::ceil(left) - left); // 0 at the flip, 1 just before
                     const float pop = 1 + .35f * decay(1 - beat, .35);
                     auto s = stencil(150 * pop, ink::chrome, {150, 40, 40, 255});
                     s.align = Align::Center, s.glow = alpha(ink::blood, .85f), s.glowSpread = 1.25f;
-                    text(640, 232 - 150 * (pop - 1) * .5f, std::to_string(int(std::ceil(-time))), s);
+                    text(640, 232 - 150 * (pop - 1) * .5f, std::to_string(int(std::ceil(left))), s);
                     auto ready = marker(30, {206, 208, 218, 255}, -3);
                     ready.align = Align::Center;
                     text(640, 430, tr("get ready"), ready);
+                }
+                if (const int k = session->activeSolo(time); k >= 0) {
+                    // The running solo: notes landed so far, as the originals count it.
+                    const auto kk = size_t(k);
+                    const int judged = session->soloJudged[kk], hit = session->soloHit[kk];
+                    auto sc = marker(26, {120, 200, 255, 255}, -2);
+                    sc.align = Align::Center, sc.glow = alpha({40, 120, 255, 255}, .6f), sc.glowSpread = 1.2f;
+                    text(640, 104,
+                         tr("SOLO  {} / {}  {}%", hit, session->soloTotal[kk], judged ? hit * 100 / judged : 100), sc);
+                }
+                if (calloutAt > 0 && ui - calloutAt < 1.4 && !calloutSub.empty()) {
+                    const float t = float((ui - calloutAt) / 1.4);
+                    auto sub = marker(30, {255, 220, 90, 255}, -3);
+                    sub.align = Align::Center;
+                    sub.top = sub.bottom = alpha(sub.top, std::min(1.0f, (1 - t) * 3));
+                    text(640, 262 - 30 * t, calloutSub, sub);
                 }
                 if (calloutAt > 0 && ui - calloutAt < 1.4) {
                     const float t = float((ui - calloutAt) / 1.4);
@@ -3745,9 +4053,11 @@ int main(int argc, char **argv) {
                         text(640, 312, tr("the amp is still humming"), held);
                     }
                     if (screen == Screen::Paused) {
-                        menu(640, 392, 62, {"RESUME", "RESTART", "CHANGE DIFFICULTY", "QUIT TO SONG LIST"}, pauseRow,
-                             ui, 460, 32, {audio.error().empty(), true, true, true});
-                        hints({{glyphAccept, "SELECT"}, {glyphBack, "RESUME"}});
+                        menu(640, 392, 62,
+                             {tr("RESUME"), tr(practiceMode ? "RESTART LOOP" : "RESTART"),
+                              tr(practiceMode ? "CHANGE SECTIONS" : "CHANGE DIFFICULTY"), tr("QUIT TO SONG LIST")},
+                             pauseRow, ui, 460, 32, {audio.error().empty(), true, true, true});
+                        hints({{glyphAccept, tr("SELECT")}, {glyphBack, tr("RESUME")}});
                     } else {
                         std::vector<std::string> items = {tr("CONTINUE"), tr("RETRY"), tr("CHANGE DIFFICULTY")};
                         if (offsetTip)
@@ -3766,8 +4076,52 @@ int main(int argc, char **argv) {
                                                        std::abs(offsetTip)),
                                  why);
                         }
-                        if (ui - screenChangedAt >= resultsLockout) // hints appear once presses count
-                            hints({{glyphAccept, tr("SELECT")}, {glyphBack, tr("CONTINUE")}});
+                        if (session->soloBonus > 0) {
+                            auto sb = body(16, ink::dim);
+                            sb.align = Align::Center;
+                            text(840, 404, tr("solo bonus +{}", grouped(int(session->soloBonus))), sb);
+                        }
+                        if (showSections && !resultSections.empty()) {
+                            // Section by section: where the song was won and lost.
+                            plate(590, 150, 650, 486);
+                            text(614, 168, tr("SECTIONS"), stencil(22, ink::dim, ink::faint));
+                            const auto &rs = resultSections;
+                            size_t weakest = rs.size();
+                            double worst = 2;
+                            for (size_t i = 0; i < rs.size(); ++i)
+                                if (rs[i].total >= 3 && double(rs[i].hit) / rs[i].total < worst)
+                                    worst = double(rs[i].hit) / rs[i].total, weakest = i;
+                            const int cols = rs.size() > 11 ? 2 : 1;
+                            const size_t perCol = std::min<size_t>(11, (rs.size() + size_t(cols) - 1) / size_t(cols));
+                            const size_t shown = std::min(rs.size(), perCol * size_t(cols));
+                            const float rowH = 36, colW = cols == 2 ? 300 : 600;
+                            for (size_t i = 0; i < shown; ++i) {
+                                const float x = 612 + float(i / perCol) * 310, y = 206 + float(i % perCol) * rowH;
+                                const int pct = rs[i].hit * 100 / rs[i].total;
+                                const SDL_Color c = pct >= 90 ? ink::acid : pct >= 70 ? SDL_Color{255, 196, 40, 255} : ink::blood;
+                                auto name = body(16, i == weakest ? ink::blood : ink::white);
+                                name.maxWidth = colW * .46f;
+                                text(x, y, rs[i].name, name);
+                                const float bx = x + colW * .48f, bw = colW * .32f;
+                                rect(bx, y + 7, bw, 8, {40, 40, 48, 255});
+                                rect(bx, y + 7, bw * float(pct) / 100, 8, c);
+                                auto p = body(16, c);
+                                p.align = Align::Right;
+                                text(x + colW - 16, y, std::to_string(pct) + "%", p);
+                            }
+                            if (shown < rs.size())
+                                text(612, 206 + float(perCol) * rowH, tr("+ {} more", rs.size() - shown), body(15, ink::dim));
+                            if (weakest < rs.size())
+                                text(614, 598, tr("weakest: {}", rs[weakest].name), marker(22, ink::blood, -1));
+                        }
+                        if (ui - screenChangedAt >= resultsLockout) { // hints appear once presses count
+                            if (resultSections.empty())
+                                hints({{glyphAccept, tr("SELECT")}, {glyphBack, tr("CONTINUE")}});
+                            else
+                                hints({{glyphAccept, tr("SELECT")},
+                                       {glyphBack, tr("CONTINUE")},
+                                       {glyphAlt, tr(showSections ? "SUMMARY" : "SECTIONS")}});
+                        }
                     }
                     if (!message.empty()) {
                         auto m = marker(22, messageInk(), -1);
