@@ -1,4 +1,6 @@
 #include "downloader.hpp"
+#include "background.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <curl/curl.h>
 #include <stdexcept>
@@ -130,6 +132,7 @@ bool Downloader::inLibrary(const enchor::Chart &chart) const {
 }
 
 void Downloader::run() {
+    runInBackground(); // parsing results and unpacking charts is real work
     std::unique_ptr<Network> network;
     while (true) {
         Job job;

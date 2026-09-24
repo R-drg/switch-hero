@@ -1,4 +1,5 @@
 #include "audio.hpp"
+#include "background.hpp"
 #include "calibration.hpp"
 #include "clock.hpp"
 #include "downloader.hpp"
@@ -410,13 +411,18 @@ struct Loaded {
 Loaded loadEntry(fs::path folder) {
     Loaded l;
     l.folder = std::move(folder);
-    l.art = look::decodeArtwork(l.folder);
+    // The cover decodes on the other spare core while this thread parses the chart.
+    auto art = std::async(std::launch::async, [folder = l.folder] {
+        runInBackground();
+        return look::decodeArtwork(folder);
+    });
     try {
         l.song = std::make_unique<Song>(loadSong(l.folder));
     } catch (const std::exception &e) {
         // The list only peeked at metadata, so real problems surface here.
         l.error = e.what();
     }
+    l.art = art.get();
     return l;
 }
 double longestSustain = 0;
@@ -1144,6 +1150,13 @@ int main(int argc, char **argv) {
         std::vector<std::string> parts;
         int selectStep = 1, partRow = 0, diffRow = 3;
         uint64_t previousButtons = 0;
+        // Holding a direction (or the strum bar) in a menu repeats it: once
+        // after a pause, then faster the longer it is held. When each held
+        // direction started, and when it next repeats; since < 0 when released.
+        struct Repeat {
+            double since = -1, next = 0;
+        };
+        std::array<Repeat, 4> repeats{};
         std::array<bool, SDL_NUM_SCANCODES> previousKeys{};
         bool running = true;
         std::string message;
@@ -1462,6 +1475,30 @@ int main(int argc, char **argv) {
             auto press = [&](int b) { return bool(pressed & bit(b)); };
             bool up = press(11) || key(SDL_SCANCODE_UP), down = press(12) || key(SDL_SCANCODE_DOWN),
                  left = press(13) || key(SDL_SCANCODE_LEFT), right = press(14) || key(SDL_SCANCODE_RIGHT);
+            {
+                // Not where up and down strum (a song, the count-in, calibration),
+                // and not on the delete prompt, where holding would flip the answer.
+                const bool menu = screen != Screen::Playing && screen != Screen::Countdown &&
+                                  screen != Screen::Calibrate && !confirmDelete && remapping < 0 && !typing;
+                const std::array<std::pair<int, SDL_Scancode>, 4> held = {
+                    std::pair{11, SDL_SCANCODE_UP}, {12, SDL_SCANCODE_DOWN}, {13, SDL_SCANCODE_LEFT}, {14, SDL_SCANCODE_RIGHT}};
+                bool *fire[4] = {&up, &down, &left, &right};
+                const double t = now();
+                for (size_t i = 0; i < 4; ++i) {
+                    auto &r = repeats[i];
+                    if (!menu || !((buttons & bit(held[i].first)) || keys[held[i].second])) {
+                        r.since = -1;
+                        continue;
+                    }
+                    if (r.since < 0) {
+                        // The press itself already counted; the first repeat waits.
+                        r.since = t, r.next = t + .35;
+                    } else if (t >= r.next) {
+                        *fire[i] = true;
+                        r.next = t + (t - r.since > 1.6 ? .045 : .09);
+                    }
+                }
+            }
             bool accept = press(1) || key(SDL_SCANCODE_RETURN), back = press(4) || key(SDL_SCANCODE_ESCAPE),
                  pause = press(6) || key(SDL_SCANCODE_P);
             // Guitar frets act as menu shortcuts only outside gameplay.
@@ -2156,7 +2193,10 @@ int main(int argc, char **argv) {
                                             }),
                              staleLoads.end());
             if (loadPending && now() - selectionChangedAt > .15 && selected < entries.size()) {
-                loading = std::async(std::launch::async, loadEntry, entries[selected].folder);
+                loading = std::async(std::launch::async, [folder = entries[selected].folder] {
+                    runInBackground();
+                    return loadEntry(folder);
+                });
                 loadPending = false;
             }
             if (loading.valid() && loading.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -2190,8 +2230,11 @@ int main(int argc, char **argv) {
                     if (previewLoading.valid())
                         stalePreviews.push_back(std::move(previewLoading));
                     previewLoadingFolder = folder;
-                    previewLoading = std::async(std::launch::async, &Audio::prepare, song->audio,
-                                                song->duration + song->offset, at);
+                    previewLoading = std::async(std::launch::async,
+                                                [stems = song->audio, length = song->duration + song->offset, at] {
+                                                    runInBackground();
+                                                    return Audio::prepare(stems, length, at);
+                                                });
                 }
                 if (previewLoading.valid() &&
                     previewLoading.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
