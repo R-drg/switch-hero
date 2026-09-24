@@ -109,6 +109,7 @@ struct Settings {
     // Indexes into highwayThemes and look::palettes().
     int highway = 0, palette = 0;
     bool rumble = true;
+    bool hitRatings = true; // the PERFECT / GREAT / GOOD pop-up over the strike line
     void load(const fs::path &path) {
         std::ifstream f(path);
         std::string line;
@@ -140,6 +141,8 @@ struct Settings {
                 lefty = v != 0;
             if (k == "timing_overlay")
                 timingOverlay = v != 0;
+            if (k == "hit_ratings")
+                hitRatings = v != 0;
             if (k == "rumble")
                 rumble = v != 0;
             if (k == "film_grain")
@@ -187,7 +190,8 @@ struct Settings {
           << "\ndifficulty " << difficulty << "\nlefty " << lefty << "\ntiming_overlay " << timingOverlay
           << "\nfilm_grain " << filmGrain
           << "\nsort_mode " << sortMode << "\nhit_window " << hitWindow << "\nmusic_volume " << musicVolume
-          << "\nsfx_volume " << sfxVolume << "\nhighway " << highway << "\npalette " << palette << "\nrumble " << rumble << '\n';
+          << "\nsfx_volume " << sfxVolume << "\nhighway " << highway << "\npalette " << palette << "\nrumble " << rumble
+          << "\nhit_ratings " << hitRatings << '\n';
         if (language >= 0)
             f << "language " << language << '\n';
         if (!lastSong.empty())
@@ -1192,7 +1196,7 @@ void menu(float cx, float y, float spacing, const std::vector<std::string> &item
 
 // The options screens: a short list of categories, each opening its own page,
 // so every setting sits under a name that says what it is for.
-enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, FilmGrain, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language, Highway, Palette, Rumble };
+enum class Opt { Mode, NoFail, HitWindow, Speed, Lefty, TimingOverlay, FilmGrain, Music, Effects, CalibrateAudio, AudioOffset, CalibrateVideo, VideoOffset, Fret, Test, Reset, Language, Highway, Palette, Rumble, HitRatings };
 struct OptionRow {
     Opt id;
     int fret = 0;
@@ -1239,6 +1243,9 @@ std::vector<OptionRow> optionRows(int page, const Settings &s, bool confirmReset
                         true});
         rows.push_back({Opt::Lefty, 0, tr("Lefty flip"), tr(s.lefty ? "ON" : "OFF"),
                         tr("Mirrors the highway so green is on the right, for left-handed players."), true});
+        rows.push_back({Opt::HitRatings, 0, tr("Hit ratings"), tr(s.hitRatings ? "ON" : "OFF"),
+                        tr("PERFECT, GREAT or GOOD over the strike line after each hit, with an early/late marker."),
+                        true});
         rows.push_back({Opt::Rumble, 0, tr("Rumble"), tr(s.rumble ? "ON" : "OFF"),
                         tr("A buzz when you miss, a pulse when star power kicks in, a double tap after a solo."), true});
     } else if (page == 1) {
@@ -2851,6 +2858,13 @@ int main(int argc, char **argv) {
                         // Right is faster, which is a shorter trip down the board.
                         settings.travel = std::clamp(settings.travel - delta * 0.05, 0.75, 3.0);
                         break;
+                    case Opt::HitRatings:
+                        if (delta || accept) {
+                            settings.hitRatings = !settings.hitRatings;
+                            if (accept)
+                                audio.playSfx(Sfx::Toggle, .8f);
+                        }
+                        break;
                     case Opt::Rumble:
                         if (delta || accept) {
                             settings.rumble = !settings.rumble;
@@ -3895,7 +3909,7 @@ int main(int argc, char **argv) {
                                                                    : "Save and go back.");
                 } else {
                     const auto rows = optionRows(optionsPage, settings, confirmReset);
-                    const float spacing = rows.size() > 5 ? 56 : 70;
+                    const float spacing = rows.size() > 6 ? 50 : rows.size() > 5 ? 56 : 70;
                     const bool customizing = optionsPage == CustomizePage;
                     for (int i = 0; i < int(rows.size()); ++i) {
                         const auto &r = rows[size_t(i)];
@@ -4385,7 +4399,7 @@ int main(int argc, char **argv) {
                     }
                     // How the last note landed. Sized up from single player's
                     // because a pane is drawn at half scale or less.
-                    if (p.lastTierAt > -1e8) {
+                    if (settings.hitRatings && p.lastTierAt > -1e8) {
                         const float pop = decay(time - p.lastTierAt, .45);
                         if (pop > 0) {
                             static const char *const names[4] = {"", "GOOD", "GREAT", "PERFECT"};
@@ -4521,7 +4535,7 @@ int main(int argc, char **argv) {
                 // Call the timing. A hit that the game cannot tell you was tight is a
                 // hit that feels the same as one scraped in at the edge of the window,
                 // which is why landing notes read as mushy.
-                if (session->lastTierAt > -1e8) {
+                if (settings.hitRatings && session->lastTierAt > -1e8) {
                     const float pop = decay(time - session->lastTierAt, .45);
                     if (pop > 0) {
                         static const char *const names[4] = {"", "GOOD", "GREAT", "PERFECT"};

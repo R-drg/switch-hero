@@ -350,6 +350,9 @@ const std::pair<const char *, const char *> portugueseTable[] = {
     {"SUMMARY", "RESUMO"},
     {"weakest: {}", "mais fraca: {}"},
     {"Rumble", "Vibração"},
+    {"Hit ratings", "Avaliação dos acertos"},
+    {"PERFECT, GREAT or GOOD over the strike line after each hit, with an early/late marker.",
+     "PERFEITO, ÓTIMO ou BOM sobre a linha a cada acerto, com um marcador de cedo/tarde."},
     {"A buzz when you miss, a pulse when star power kicks in, a double tap after a solo.",
      "Vibra ao errar, pulsa quando o star power começa e dá um toque depois de um solo."},
     // Download queue
