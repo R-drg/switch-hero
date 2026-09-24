@@ -164,9 +164,42 @@ float fbm(float x, float y, int period, uint32_t seed, int octaves = 4) {
     }
     return sum / norm;
 }
+// Draws are batched: consecutive geometry with the same texture (or none) is
+// collected into one mesh and sent as a single draw call. Each call costs the
+// console's driver real CPU time, and split screen drew four highways' worth of
+// them, several hundred a frame. Anything that changes renderer state flushes
+// first, so the order of what reaches the screen never changes.
+struct Batch {
+    SDL_Texture *texture = nullptr;
+    std::vector<SDL_Vertex> vertices;
+    std::vector<int> indices;
+} batch;
+void flushBatch() {
+    if (!batch.indices.empty())
+        SDL_RenderGeometry(renderer, batch.texture, batch.vertices.data(), int(batch.vertices.size()),
+                           batch.indices.data(), int(batch.indices.size()));
+    batch.vertices.clear(), batch.indices.clear();
+}
+void geometry(SDL_Texture *t, const SDL_Vertex *v, size_t vn, const int *idx, size_t in) {
+    if (!vn || !in)
+        return;
+    if (t != batch.texture || batch.vertices.size() + vn > 60000) {
+        flushBatch();
+        batch.texture = t;
+    }
+    const int base = int(batch.vertices.size());
+    batch.vertices.insert(batch.vertices.end(), v, v + vn);
+    for (size_t i = 0; i < in; ++i)
+        batch.indices.push_back(base + idx[i]);
+}
 void geometry(SDL_Texture *t, const std::vector<SDL_Vertex> &v, const std::vector<int> &idx) {
-    if (!v.empty())
-        SDL_RenderGeometry(renderer, t, v.data(), int(v.size()), idx.data(), int(idx.size()));
+    geometry(t, v.data(), v.size(), idx.data(), idx.size());
+}
+// One textured quad, corners clockwise from the top left, tinted by `c`.
+void texturedQuad(SDL_Texture *t, const SDL_FPoint (&p)[4], SDL_Color c) {
+    const SDL_Vertex v[4] = {{p[0], c, {0, 0}}, {p[1], c, {1, 0}}, {p[2], c, {1, 1}}, {p[3], c, {0, 1}}};
+    static const int idx[6] = {0, 1, 2, 0, 2, 3};
+    geometry(t, v, 4, idx, 6);
 }
 SDL_FPoint rotate(SDL_FPoint p, SDL_FPoint around, float radians) {
     float c = std::cos(radians), s = std::sin(radians), x = p.x - around.x, y = p.y - around.y;
@@ -774,6 +807,7 @@ SDL_Texture *bakeTarget(const std::function<void()> &draw) {
     SDL_Texture *t = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, SpriteW, SpriteH);
     if (!t)
         return nullptr;
+    flushBatch();
     auto *previous = SDL_GetRenderTarget(renderer);
     if (SDL_SetRenderTarget(renderer, t)) {
         SDL_DestroyTexture(t);
@@ -785,6 +819,7 @@ SDL_Texture *bakeTarget(const std::function<void()> &draw) {
     SDL_RenderClear(renderer);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     draw();
+    flushBatch();
     SDL_SetRenderTarget(renderer, previous);
     return t;
 }
@@ -1085,21 +1120,23 @@ void bakeReceptors() {
             receptorTex[i][pressed] = bakeTarget([&] { bakeReceptor(lanes[i], pressed); });
         }
 }
+// Sprites go through the batch too, tinted by vertex colour rather than the
+// texture's colour mod, so a run of the same sprite (flames, sparks, glows)
+// is one draw call.
 void blit(SDL_Texture *t, float x, float y, float w, float h, SDL_Color c = {255, 255, 255, 255}) {
     if (!t)
         return;
-    SDL_SetTextureColorMod(t, c.r, c.g, c.b);
-    SDL_SetTextureAlphaMod(t, c.a);
-    SDL_FRect r{x, y, w, h};
-    SDL_RenderCopyF(renderer, t, nullptr, &r);
+    const SDL_FPoint p[4] = {{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}};
+    texturedQuad(t, p, c);
 }
 void blitRotated(SDL_Texture *t, float cx, float cy, float w, float h, float angleDeg, SDL_Color c) {
     if (!t)
         return;
-    SDL_SetTextureColorMod(t, c.r, c.g, c.b);
-    SDL_SetTextureAlphaMod(t, c.a);
-    SDL_FRect r{cx - w / 2, cy - h / 2, w, h};
-    SDL_RenderCopyExF(renderer, t, nullptr, &r, angleDeg, nullptr, SDL_FLIP_NONE);
+    const float a = angleDeg * Tau / 360;
+    const SDL_FPoint centre{cx, cy};
+    const SDL_FPoint p[4] = {rotate({cx - w / 2, cy - h / 2}, centre, a), rotate({cx + w / 2, cy - h / 2}, centre, a),
+                             rotate({cx + w / 2, cy + h / 2}, centre, a), rotate({cx - w / 2, cy + h / 2}, centre, a)};
+    texturedQuad(t, p, c);
 }
 } // namespace
 
@@ -1115,7 +1152,10 @@ SDL_FRect paneRect(size_t player, size_t players) {
     return {float(player % 2) * W / 2, float(player / 2) * H / 2, float(W) / 2, float(H) / 2};
 }
 
+void flush() { flushBatch(); }
+void mesh(SDL_Texture *t, const std::vector<SDL_Vertex> &v, const std::vector<int> &idx) { geometry(t, v, idx); }
 void clearViewport() {
+    flushBatch(); // what is queued belongs to the pane it was drawn for
     SDL_RenderSetViewport(renderer, nullptr);
     // Re-asserting the logical size makes SDL recompute the letterbox scale
     // from the window's *current* size. Caching that scale instead would go
@@ -1126,7 +1166,7 @@ void clearViewport() {
 }
 
 void setViewport(size_t player, size_t players) {
-    clearViewport(); // start from a known full-screen scale
+    clearViewport(); // flushes, then starts from a known full-screen scale
     float baseScale = 1, ignored = 1;
     SDL_RenderGetScale(renderer, &baseScale, &ignored);
     if (!(baseScale > 0))
@@ -1223,9 +1263,10 @@ SDL_Color mix(SDL_Color a, SDL_Color b, float t) {
 }
 SDL_Color alpha(SDL_Color c, float a) { return {c.r, c.g, c.b, u8(c.a * a)}; }
 void rect(float x, float y, float w, float h, SDL_Color c) {
-    SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
-    SDL_FRect r{x, y, w, h};
-    SDL_RenderFillRectF(renderer, &r);
+    // A flat quad in the batch, not a fill call of its own.
+    const SDL_Vertex v[4] = {{{x, y}, c, {0, 0}}, {{x + w, y}, c, {0, 0}}, {{x + w, y + h}, c, {0, 0}}, {{x, y + h}, c, {0, 0}}};
+    static const int idx[6] = {0, 1, 2, 0, 2, 3};
+    geometry(nullptr, v, 4, idx, 6);
 }
 void quad(SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, SDL_FPoint d, SDL_Color ca, SDL_Color cb, SDL_Color cc,
           SDL_Color cd) {
@@ -1333,6 +1374,7 @@ void text(float x, float y, const std::string &raw, const Style &st) {
 
 // ---------------------------------------------------------------- set pieces
 void wall(double time, SDL_Color light) {
+    flushBatch();
     SDL_SetRenderDrawColor(renderer, 8, 8, 10, 255);
     SDL_RenderClear(renderer);
     blit(wallTex, 0, 0, W, H);
@@ -1374,6 +1416,7 @@ void grade(double time) {
     for (float ty = -oy; ty < H; ty += 256)
         for (float tx = -ox; tx < W; tx += 256)
             blit(grainTex, tx, ty, 256, 256, {255, 255, 255, 22});
+    flushBatch(); // the frame is complete: everything must reach the screen
 }
 void setGrain(bool on) { grainOn = on; }
 void tape(float cx, float cy, float w, float h, float angleDeg, float shade) {
@@ -1499,6 +1542,7 @@ SDL_Texture *loadArtwork(const fs::path &folder) { return uploadArtwork(decodeAr
 void photo(SDL_Texture *art, float cx, float cy, float size, float angleDeg, float shade) {
     if (!art)
         return;
+    flushBatch(); // the cover is drawn directly, with its own colour mod
     const float border = std::max(6.0f, size * .05f), outer = size + border * 2;
     const float a = angleDeg * Tau / 360;
     auto corner = [&](float dx, float dy) { return rotate({cx + dx, cy + dy}, {cx, cy}, a); };

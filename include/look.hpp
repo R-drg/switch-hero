@@ -73,6 +73,11 @@ struct Style {
 float measure(const std::string &s, Face face, float size, float tracking = 0);
 void text(float x, float y, const std::string &s, const Style &style);
 
+// Drawing is batched (see look.cpp): call flush() before touching the renderer
+// directly (render targets, SDL_RenderCopy, present, reading pixels).
+void flush();
+// Raw triangles through the batch; `t` may be null for flat colour.
+void mesh(SDL_Texture *t, const std::vector<SDL_Vertex> &v, const std::vector<int> &idx);
 // Primitives.
 void rect(float x, float y, float w, float h, SDL_Color c);
 void quad(SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, SDL_FPoint d, SDL_Color ca, SDL_Color cb, SDL_Color cc,

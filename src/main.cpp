@@ -904,7 +904,7 @@ void highway(const Song &song, const Session &session, const Settings &settings,
                             idxs.insert(idxs.end(), {b, b + 1, b + 2, b + 2, b + 1, b + 3});
                         }
                     }
-                    SDL_RenderGeometry(renderer, nullptr, v.data(), int(v.size()), idxs.data(), int(idxs.size()));
+                    look::mesh(nullptr, v, idxs);
                 };
                 tube(2.6f, alpha(c, state.result < 0 ? .12f : holding ? .4f : .28f));
                 tube(1, alpha(c, state.result < 0 ? .45f : 1));
@@ -987,18 +987,25 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         quad({xx(0, top), top}, {xx(5, top), top}, {xx(5, hazeTo), hazeTo}, {xx(0, hazeTo), hazeTo},
              theme.haze, theme.haze, alpha(theme.haze, 0), alpha(theme.haze, 0));
     }
-    if (theme.effects & Embers)
-        // Sparks rising off the board, each on its own slow loop.
-        for (int i = 0; i < 26; ++i) {
+    if (theme.effects & Embers) {
+        // Sparks rising off the board, each on its own slow loop. All the glows
+        // go first and all the cores after, so each is a single draw.
+        constexpr int count = 26;
+        std::array<SDL_FPoint, count> at;
+        std::array<float, count> fade;
+        for (int i = 0; i < count; ++i) {
             const double cycle = ui * (.25 + .2 * hash01(uint32_t(i) * 7919u)) + hash01(uint32_t(i) * 104729u);
             const float life = float(cycle - std::floor(cycle));
             const float y = bottom - life * (bottom - top) * .9f;
             const float lane = hash01(uint32_t(i) * 31u + uint32_t(int64_t(std::floor(cycle)) * 977)) * 5;
-            const float x = xx(lane, y) + std::sin(float(ui) * 2 + float(i)) * 6;
-            const float fade = std::sin(life * 3.14159f);
-            glow(x, y, 18, 18, alpha({255, 130, 30, 255}, fade * .9f));
-            rect(x - 1, y - 1, 2, 2, alpha({255, 230, 160, 255}, fade));
+            at[size_t(i)] = {xx(lane, y) + std::sin(float(ui) * 2 + float(i)) * 6, y};
+            fade[size_t(i)] = std::sin(life * 3.14159f);
         }
+        for (int i = 0; i < count; ++i)
+            glow(at[size_t(i)].x, at[size_t(i)].y, 18, 18, alpha({255, 130, 30, 255}, fade[size_t(i)] * .9f));
+        for (int i = 0; i < count; ++i)
+            rect(at[size_t(i)].x - 1, at[size_t(i)].y - 1, 2, 2, alpha({255, 230, 160, 255}, fade[size_t(i)]));
+    }
     if (theme.effects & Lightning) {
         // Now and then a bolt forks down the board with a flash behind it.
         const double every = 3.1;
@@ -1027,19 +1034,25 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         glow(640, bottom, width(bottom) * 1.15f, 70,
              alpha(power ? ink::power : theme.strike, .08f + .16f * pulse));
     }
-    for (int l = 0; l < 5; ++l) {
-        float x = xx(l + .5f, bottom);
-        // A held fret spills its colour back up the board, so the lane you are on
-        // is lit rather than merely outlined.
+    // Fret buttons in three passes (spill glows, buttons, labels) rather than
+    // one lane at a time, so each pass batches into as few draws as it can.
+    // A held fret spills its colour back up the board, so the lane you are on
+    // is lit rather than merely outlined.
+    for (int l = 0; l < 5; ++l)
         if (held & (1 << l))
-            glow(x, bottom - 40, width(bottom) / 5 * 1.6f, 300, alpha(power ? ink::power : lanes[size_t(l)], .16f));
-        receptor(size_t(l), x, bottom, 106 * nearWidth / 580, held & (1 << l), power, hitFlash[size_t(l)]);
+            glow(xx(l + .5f, bottom), bottom - 40, width(bottom) / 5 * 1.6f, 300,
+                 alpha(power ? ink::power : lanes[size_t(l)], .16f));
+    for (int l = 0; l < 5; ++l)
+        receptor(size_t(l), xx(l + .5f, bottom), bottom, 106 * nearWidth / 580, held & (1 << l), power,
+                 hitFlash[size_t(l)]);
+    for (int l = 0; l < 5; ++l) {
         // Dark palettes (obsidian, black bumblebee lanes) would hide the label.
         const SDL_Color lc = lanes[size_t(l)];
         const float luma = .3f * lc.r + .59f * lc.g + .11f * lc.b;
         auto label = body(16, alpha(luma < 110 ? mix(lc, {255, 255, 255, 255}, .55f) : lc, .85f));
         label.align = Align::Center;
-        text(x, edge + 2, bindingName(settings.wiiGuitar ? wiiGuitarBindings[l] : settings.bindings[l]), label);
+        text(xx(l + .5f, bottom), edge + 2, bindingName(settings.wiiGuitar ? wiiGuitarBindings[l] : settings.bindings[l]),
+             label);
     }
     // Fire sits above the fret buttons; sustain flames first so bursts flare over them.
     std::stable_sort(fires.begin(), fires.end(), [](const look::Fire &a, const look::Fire &b) { return a.sustain > b.sustain; });
@@ -1073,10 +1086,11 @@ void loadingScreen(const std::string &label, float progress, int count, double u
         const float sweep = float(.5 - .5 * std::cos(ui * 3));
         rect(x + (w - 90) * sweep, y, 90, 6, ink::acid);
     }
-    grade(ui);
+    grade(ui); // flushes
     SDL_RenderPresent(renderer);
 }
 void screenshot(const std::string &path) {
+    look::flush();
     SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormat(0, W, H, 32, SDL_PIXELFORMAT_ARGB8888);
     if (surface) {
         if (SDL_RenderReadPixels(renderer, nullptr, surface->format->format, surface->pixels, surface->pitch) == 0)
@@ -3884,6 +3898,7 @@ int main(int argc, char **argv) {
                         if (!previewTarget)
                             previewTarget = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
                                                               SDL_TEXTUREACCESS_TARGET, W, H);
+                        look::flush();
                         if (previewTarget && SDL_SetRenderTarget(renderer, previewTarget) == 0) {
                             SDL_SetRenderDrawColor(renderer, 10, 10, 14, 255);
                             SDL_RenderClear(renderer);
@@ -3892,12 +3907,14 @@ int main(int argc, char **argv) {
                             longestSustain = std::max(keep, 1.0);
                             highway(previewSong, *previewSession, settings, t, held, ui);
                             longestSustain = keep;
+                            look::flush();
                             SDL_SetRenderTarget(renderer, nullptr);
                             // The board and fret buttons, cropped from the full frame.
                             const SDL_Rect crop{300, 96, 680, 604};
                             const float h = 370, w = h * crop.w / crop.h;
                             const SDL_FRect dest{960 - w / 2, 184, w, h};
                             rect(dest.x - 4, dest.y - 4, dest.w + 8, dest.h + 8, {0, 0, 0, 170});
+                            look::flush();
                             SDL_RenderCopyF(renderer, previewTarget, &crop, &dest);
                         }
                     }
@@ -4837,6 +4854,7 @@ int main(int argc, char **argv) {
                           << " notes hit through SDL virtual controller; screenshot " << shot << '\n';
                 running = false;
             }
+            look::flush(); // the timing overlay is drawn after grade()
             SDL_RenderPresent(renderer);
             for (auto *t : retired)
                 SDL_DestroyTexture(t);
