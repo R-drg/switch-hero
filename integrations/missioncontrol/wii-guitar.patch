@@ -1,5 +1,5 @@
 diff --git a/mc_mitm/source/controllers/wii_controller.cpp b/mc_mitm/source/controllers/wii_controller.cpp
-index 3580031..15c87e2 100644
+index 3580031..c88b5a4 100644
 --- a/mc_mitm/source/controllers/wii_controller.cpp
 +++ b/mc_mitm/source/controllers/wii_controller.cpp
 @@ -14,6 +14,7 @@
@@ -57,15 +57,17 @@ index 3580031..15c87e2 100644
      void WiiController::MapNunchuckExtension(const u8 ext[]) {
          auto extension_data = reinterpret_cast<const WiiNunchuckExtensionData *>(ext);
  
-@@ -455,13 +482,17 @@ namespace ams::controller {
+@@ -455,26 +482,35 @@ namespace ams::controller {
                      mp_status = this->GetMotionPlusStatus();
  
                      if (!((mp_status == MotionPlusStatus_None) || (mp_status == MotionPlusStatus_Active))) {
 -                        if (mp_status == MotionPlusStatus_Uninitialised) {
 -                            R_TRY(this->InitializeMotionPlus());
 -                        }
-+                        // A guitar has no MotionPlus passthrough format that can be
-+                        // decoded, so leave MotionPlus alone while one is attached.
++                        // Initialise the extension behind the inactive MotionPlus so its ID
++                        // reads reliably. A guitar has no MotionPlus passthrough format that
++                        // can be decoded, so leave MotionPlus alone while one is attached.
++                        R_TRY(this->InitializeStandardExtension());
 +                        if (this->GetExtensionControllerType() != WiiExtensionController_Guitar) {
 +                            if (mp_status == MotionPlusStatus_Uninitialised) {
 +                                R_TRY(this->InitializeMotionPlus());
@@ -80,7 +82,12 @@ index 3580031..15c87e2 100644
                      }
                  }
  
-@@ -472,9 +503,11 @@ namespace ams::controller {
+                 auto extension = this->GetExtensionControllerType();
+-                if ((extension == WiiExtensionController_None)) {
++                // An extension that has not been initialised yet can report a garbled ID
++                if ((extension == WiiExtensionController_None) || (extension == WiiExtensionController_Unrecognised)) {
+                     R_TRY(this->InitializeStandardExtension());
+                     extension = this->GetExtensionControllerType();
                  }
                  // Connected extension has changed
                  if (m_extension != extension) {
@@ -92,7 +99,7 @@ index 3580031..15c87e2 100644
                          case WiiExtensionController_TaTaCon:
                              m_orientation = WiiControllerOrientation_Vertical;
                              R_TRY(this->SetReportMode(0x35));
-@@ -492,8 +525,19 @@ namespace ams::controller {
+@@ -492,8 +528,19 @@ namespace ams::controller {
                              m_orientation = WiiControllerOrientation_Horizontal;
                              R_TRY(this->SetReportMode(0x35));
                              break;
@@ -113,7 +120,7 @@ index 3580031..15c87e2 100644
                              m_orientation = WiiControllerOrientation_Vertical;
                              R_TRY(this->SetReportMode(0x35));
                              break;
-@@ -517,6 +561,12 @@ namespace ams::controller {
+@@ -517,6 +564,12 @@ namespace ams::controller {
                              // Set appropriate passthrough MotionPlus mode
                              if (extension == WiiExtensionController_Nunchuck) {
                                  R_TRY(this->ActivateMotionPlusNunchuckPassthrough());
@@ -126,15 +133,30 @@ index 3580031..15c87e2 100644
                              } else {
                                  R_TRY(this->ActivateMotionPlusClassicPassthrough());
                              }
-@@ -547,6 +597,7 @@ namespace ams::controller {
+@@ -546,10 +599,21 @@ namespace ams::controller {
+             MC_RUN_ASYNC (
                  auto mp_status = this->GetMotionPlusStatus();
  
-                 if ((mp_status == MotionPlusStatus_None) || !m_enable_motion) {
+-                if ((mp_status == MotionPlusStatus_None) || !m_enable_motion) {
++                if ((mp_status == MotionPlusStatus_None) || !m_enable_motion || (m_extension == WiiExtensionController_Guitar)) {
++                    const bool was_guitar = m_extension == WiiExtensionController_Guitar;
 +                    this->ClearControllerState();
                      m_extension = WiiExtensionController_None;
                      m_orientation = WiiControllerOrientation_Horizontal;
                      R_TRY(this->SetReportMode(0x31));
-@@ -584,6 +635,8 @@ namespace ams::controller {
++
++                    // Deactivating MotionPlus for a guitar briefly reports the extension as
++                    // unplugged. Activating MotionPlus here would hide the guitar again, so
++                    // check once more after the transient; a real unplug then lands in the
++                    // branch below with no guitar recorded.
++                    if (was_guitar && (mp_status != MotionPlusStatus_None) && m_enable_motion) {
++                        os::SleepThread(ams::TimeSpan::FromMilliSeconds(250));
++                        R_TRY(this->QueryStatus());
++                    }
+                 } else {
+                     if (mp_status == MotionPlusStatus_Uninitialised) {
+                         R_TRY(this->InitializeMotionPlus());
+@@ -584,6 +648,8 @@ namespace ams::controller {
                      return WiiExtensionController_MotionPlusNunchuckPassthrough;
                  case 0xA4200705:
                      return WiiExtensionController_MotionPlusClassicControllerPassthrough;

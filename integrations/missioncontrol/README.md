@@ -88,9 +88,12 @@ changes clear MissionControl's cached state so removed frets do not remain held.
 A Wii Remote with MotionPlus (including Wii Remote Plus units) otherwise routes
 any non-nunchuk extension through MotionPlus *classic passthrough*, which
 reports a layout this decoder cannot read: the remote's own buttons arrive and
-the frets never do. The patch therefore skips activating MotionPlus while a
-guitar is attached, and switches an already-active passthrough back to the
-guitar's own six-byte format. A classic controller behind MotionPlus is
+the frets never do. The patch therefore initializes the extension before
+reading its ID (an uninitialized guitar can report a garbled ID), skips
+activating MotionPlus while a guitar is attached, and switches an already-active
+passthrough back to the guitar's own six-byte format. Turning MotionPlus off
+briefly reports the guitar as unplugged; the module re-checks instead of
+reactivating MotionPlus, which previously left the frets dead. A classic controller behind MotionPlus is
 re-identified once when it attaches, then continues to use passthrough as
 before.
 
