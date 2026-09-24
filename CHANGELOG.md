@@ -1,160 +1,114 @@
 # Changelog
-## Unreleased
+## 0.3
+
+The 0.3 release adds split-screen multiplayer, practice mode, solos, a
+Portuguese translation and a customization menu with 13 highways and 24 note
+palettes, and makes start-up, the song list and split screen much faster.
+Everything below passes the desktop tests and the Switch cross-build. The
+items marked *(hardware)* still need a run on a console.
 
 ### Split-screen multiplayer
 - Two to four players on one console, each on their own board, all playing the
   same song. Two players get side-by-side halves; three or four get quadrants,
-  with the fourth left empty when three are playing.
+  with the fourth left empty when three are playing. Contributed by RonyAbreu.
 - **Docked only.** The Multiplayer entry refuses to open in handheld mode and
   says why before it refuses, and undocking mid-song pauses rather than playing
   on for three players who can no longer see a board.
 - A lobby where every seat is driven by its own controller at once: A joins, B
-  leaves, left/right picks the instrument, up/down the difficulty, Plus starts.
-  Difficulty stepping skips tiers the chart does not carry, so a seat can never
-  sit on an empty one. Each player gets the hit window their own difficulty
-  earns, so an expert and a beginner can share a song.
-- Songs count in 3-2-1 before the first note and again after a pause, with the
-  lead-in drumstick clicks, rather than dropping four players straight into
-  notes.
-- Pause is a menu, as in single player: resume, restart, quit to song list.
-  There is no change-difficulty row, since up to four difficulties are in play
-  and no one of them to change.
-- Every board calls its own timing - GOOD, GREAT, PERFECT with the early/late
-  marker - and shouts its own streak milestones and star power. A streak
-  belongs to whoever earned it and says nothing to the other three. The
-  dropped-note screech keeps one shared rate limit so four players fumbling at
-  once cannot machine-gun it.
-- The song is named once for the room: title, artist, elapsed time and a
-  progress bar across the top of the screen rather than repeated on every
-  board.
+  leaves, up/down (or the strum bar) picks a row and left/right changes it, and
+  Plus starts. The rows are **part, difficulty, highway and note colours**, so
+  every player plays on their own board style, and the choices are kept between
+  songs. Difficulty stepping skips tiers the chart does not carry. Each player
+  gets the hit window their own difficulty earns, so an expert and a beginner
+  can share a song.
+- Songs count in 3-2-1 before the first note and again after a pause.
+- Pause is a menu: resume, restart, quit to song list.
+- Every board calls its own timing and shouts its own streak milestones and
+  star power. The dropped-note screech keeps one shared rate limit.
+- The song is named once for the room across the top of the screen.
 - Results are a comparative table: rank, score, accuracy, best streak and full
   combo per player, with ties sharing a rank. A replays the same line-up.
-- Multiplayer forces no-fail. Dropping a failed player would leave a dead
-  quarter of the screen for the rest of the song; the rock meter still moves
-  and still reads red, it just stops being an eject button.
-- The guitar stem is never ducked in multiplayer. It is one shared audio
-  stream, so muting it because one of four players is in the red would punish
-  the other three for that player's mistake.
-- Multiplayer never writes a high score. `scores.cfg` is keyed by song, part
-  and difficulty with no room for a player, and four runs would fight over one
-  record, so the standings are shown instead. The file format is unchanged.
+- Multiplayer forces no-fail, never ducks the (shared) guitar stem and never
+  writes a high score; `scores.cfg` has no player dimension.
+- The Switch input thread samples four pads, each with its own press
+  timestamp, so one player's press time is never judged against another's.
+  Player one keeps the default pad and the Wii guitar. Audio and video offsets
+  stay shared: they describe the console and the television.
+- `look::setViewport` places each pane on top of the logical-size letterbox;
+  `highway()` takes its board shape, so split screen gets a wider, taller board.
 
-### Input
-- The Switch input thread samples four pads instead of one, each with its own
-  press timestamp on the `now()` clock. A single shared stamp would hand one
-  player's press time to another player's judgement. Player one keeps the
-  default pad - handheld as well as No1 - and the Wii guitar, so single player
-  is unchanged.
-- Audio and video offsets stay shared across seats on purpose: they describe
-  the console and the television, not a controller, so player one's calibration
-  is the right answer for all four.
-- The desktop backend opens up to four controllers, so split screen can be
-  developed and played without a console.
+### Practice, solos and sections
+- **Practice mode** (title menu -> Practice): pick a song, part and
+  difficulty, then the section the loop starts at and the one it ends at. The
+  loop plays with a count-in, restarts instantly (the open audio streams are
+  seeked rather than reopened), and shows each loop's accuracy. Practice
+  cannot fail and records no scores. Charts without named sections are split
+  into eight-measure parts.
+- **Sections** are read from `.chart` `[Events]` and MIDI EVENTS text,
+  including Rock Band `prc_` names. The results screen has a **Sections**
+  view (Y) with an accuracy bar per section and the weakest one marked.
+- **Solos** are read from `E solo`/`soloend` and MIDI note 103 (when 116 carries
+  star power). A running solo shows a live counter and turns the rails blue,
+  and its end calls out "SOLO 94%" or "PERFECT SOLO!" with a bonus of 100 per
+  note hit.
 
-### Rendering
-- `look::setViewport` places a pane by composing a scale and viewport on top of
-  the logical-size letterbox, re-derived on every call so it survives the
-  console changing output resolution on its way into the dock. Draw code still
-  works in 1280x720 units and needs to know nothing about the split.
-- `highway()` now takes its board geometry. Single player keeps the proportions
-  it had; split screen passes a wider, taller board, because the single-player
-  margins that make room for a full-width HUD left the board a narrow ribbon in
-  a half or quarter pane. The fret buttons scale with it.
+### Customization
+- Options -> Customize, with a live preview that plays a short chart by itself.
+  - **13 highways**: Grip tape (the original), Rosewood (nickel frets,
+    strings, pearl inlays, bone binding), Synthwave (neon grid, striped sun),
+    Pastel dream, Hellfire (lava veins, rising embers), Diamond plate
+    (hazard-stripe rails), Carbon fiber, Thunderstorm (lightning), Toxic
+    waste, Zebra, Checkerboard, Nebula and Frostbite.
+  - **24 note colour palettes**, which need not follow the fret colours:
+    Classic, Pastel, Neon and Colorblind; one colour on every fret (Blood,
+    Bone, Obsidian, Gold record, Platinum, Radioactive, Ghost); two colours
+    alternating (Bumblebee, Candy cane, Vaporwave, Royalty, Cyberpunk); and
+    gradients and sets (Inferno, Glacier, Sunset, Deep sea, Rasta, Arcade,
+    Camo, Sakura). Star power stays blue.
 
-### Performance
-- **Options -> Audio / video sync -> Film grain** turns off the grain loop in
-  `look::grade()` on its own. It is roughly fifteen tiled fullscreen blits per
-  frame and the cheapest third of the pass to lose, and split screen multiplies
-  everything else on screen, so it is the first thing to reach for if frames
-  drop.
+### Language
+- Portuguese (Brazilian) translation. The first start asks for English or
+  Português, preselecting the console's language, and Options -> Language
+  changes it. Fonts now carry Latin-1, so accented letters (and accented chart
+  titles) draw as themselves.
 
-### Everything else
+### Gameplay
+- **Whammy.** Moving the Wii guitar's whammy bar, or either stick on a
+  controller (W on a keyboard), while holding a star-phrase sustain fills star
+  power and stretches an active one. Only movement counts. The audio is not
+  bent. The MissionControl patch sends the whammy bar as right stick X.
+- **Rumble** *(hardware)*: a buzz on a missed note, a pulse when star power
+  kicks in and a tap after a solo. Options -> Gameplay -> Rumble.
+- **Hit ratings** can be turned off: Options -> Gameplay -> Hit ratings hides
+  the PERFECT/GREAT/GOOD pop-up and its early/late marker.
+- Holding a direction (or the strum bar) in a menu repeats the move, speeding
+  up the longer it is held.
 
-- Customization: Options -> Customize, with a live preview that plays a short
-  chart by itself as you change settings. The number beside each option shows
-  where you are in the list.
-  - **13 highways**: Grip tape (the original), Rosewood (a real fretboard:
-    nickel frets, strings, pearl inlays, bone binding), Synthwave (neon grid,
-    striped sun), Pastel dream, Hellfire (charred rock split by lava veins,
-    embers rising), Diamond plate (tread-plate steel with hazard-stripe
-    rails), Carbon fiber (twill weave, red racing lines), Thunderstorm (storm
-    clouds with lightning striking down the board), Toxic waste (glowing
-    sludge and hazard rails), Zebra, Checkerboard (scuffed punk-stage
-    checkers), Nebula (gas clouds and stars) and Frostbite (cracked ice).
-    Surfaces are painted the first time they're shown, so start-up doesn't
-    pay for thirteen.
-  - **24 note color palettes**. They don't have to follow the fret colors:
-    - Four-color sets: Classic, Pastel, Neon and Colorblind.
-    - One color on every fret: Blood, Bone, Obsidian, Gold record, Platinum,
-      Radioactive and Ghost.
-    - Two colors alternating: Bumblebee, Candy cane, Vaporwave, Royalty and
-      Cyberpunk.
-    - Gradients and sets: Inferno, Glacier, Sunset, Deep sea, Rasta, Arcade,
-      Camo and Sakura.
-    Each palette recolors the gems, fret buttons, sustains, flames and lane
-    labels (dark ones are lightened so the labels stay readable). Star power
-    stays blue.
-  Both are saved with the settings. Reset all options returns them to Grip
-  tape and Classic.
-- Portuguese (Brazilian) translation. The first start asks for a language
-  (English or Português), preselecting the console's own language. It can be
-  changed any time under Options -> Language.
-- The download screen shows the highlighted chart in a detail panel: cover
-  art, album, year, genre, length and charter, then every five-fret part with
-  its intensity and note count per difficulty. Below that, the guitar's peak
-  notes per second, whether it has solos, open notes or taps, and any parts
-  the game can't play (drums, vocals). Covers load on their own thread once
-  the cursor rests, so scrolling and downloads never wait on them.
-- Chart details, covers and previews on the song list load much faster on the
-  console *(hardware)*. Background work used to start on core 0 beside the
-  renderer, and Horizon doesn't time-slice equal-priority threads, so it
-  only ran while a frame waited on vsync. Loaders, cover decoding, preview
-  stems, gem renders and downloads now run on the spare cores at a lower
-  priority. The chart and its cover also load in parallel.
-- Whammy. Moving the Wii guitar's whammy bar, or either stick on a
-  controller (W on a keyboard), while holding a sustain from an intact star
-  phrase fills star power, about a bar every 30 beats, and extends an active
-  star power. Only movement counts, so a resting bar or a drifting stick
-  earns nothing. The audio isn't bent; the sustain wobbles, turns blue while
-  it charges, and the star power meter glows. The MissionControl patch now
-  sends the whammy bar as right stick X.
-- No more freeze after the start-up scan *(hardware)*. The game used to load
-  the selected chart right after the scan and wait on it. Its cover decode
-  could sit behind the start-up gem renders at the same priority, which
-  Horizon never switches between. The title menu now opens at once and the
-  chart loads in the background. Gem renders run below every loader, so a
-  load always goes first.
-- The jewel gems ship pre-rendered in `assets/gems.bin` (1.6 MB) *(hardware)*.
-  Every launch used to ray-march them on four threads. That's 0.6 CPU-seconds
-  on a desktop and several seconds of both spare cores on the console, so the
-  first scan, the background library check and chart loads crawled behind
-  it. It could also hold off the input thread, which froze the main menu. The
-  file now loads in about 5 ms. A `gems` test fails if it stops matching the
-  renderer.
-- The input thread and audio mixer run one step above the main thread, so
-  background work sharing their cores can never starve them.
-- Start-up textures are painted on three cores at once (0.14 s to 0.08 s on
-  a desktop).
-- Start-up no longer waits for a scan *(hardware)*. The song list is cached
-  in `library.cache` next to the settings, so the title menu opens with the
-  last known library right away. The SD card is checked behind the menus, and
-  added or removed songs appear once the check finishes. Only the first start
-  (or a lost cache) shows the scan. A folder whose file names haven't changed
-  keeps its cached title; one exception: an edit to `song.ini` alone isn't
-  picked up.
-- Each song folder is listed once instead of over and over. The scan used to
-  list a folder four or five times per song, and loading a chart tried every
-  stem name and extension with a fresh listing each time. Measured on
-  165 typical song folders: the scan went from 2,499 file system calls to 841,
-  and loading every chart from about 297 calls per song to 11. On the console
-  each call is a round trip to the SD card.
-- The start-up scan runs on a spare core while the main thread only draws its
-  progress. It used to stop on every loading-screen redraw; in the software
-  renderer that turned 0.1 s of scanning 1,500 songs into 55 s.
-- Holding up/down (or the strum bar) or left/right in a menu repeats the move:
-  first after 0.35 s, then every 90 ms, speeding up to 45 ms after 1.6 s held.
-- The fonts now include the Latin-1 range, so accented letters draw as
-  themselves instead of being folded to plain ASCII. Chart titles benefit too.
+### Downloads
+- The highlighted chart has a detail panel: cover art, album, year, genre,
+  length, charter, every five-fret part with its intensity and note counts per
+  difficulty, the guitar's peak notes per second, solos/open notes/taps, and
+  parts the game cannot play.
+- **A download queue.** A queues or unqueues a chart, X cancels everything, and
+  B leaves while the queue keeps downloading; finished songs join the list in
+  the background.
+
+### Performance and loading *(hardware)*
+- Draws are batched: consecutive draws with the same texture go out as one
+  call. Measured on desktop, four players went from 554-786 draw calls a frame
+  to 140-146 and single player from 204-262 to 46-49.
+- Background work (chart loads, covers, preview stems, downloads, scans) runs
+  on the spare cores at a lower priority, instead of waiting on the render
+  core; the input thread and mixer run above the main thread.
+- The jewel gems ship pre-rendered in `assets/gems.bin`; rendering them at
+  every launch cost several seconds of both spare cores and could freeze the
+  menu's input. A `gems` test keeps the file in step with the renderer.
+- The song list is cached in `library.cache`, so the title menu opens with the
+  last library at once and the card is checked in the background. Each song
+  folder is listed once: on 165 folders the scan went from 2,499 file system
+  calls to 841, and a chart load from about 297 calls to 11.
+- Start-up textures paint on three cores; highway surfaces are painted when
+  first shown; Film grain (Options -> Audio / video sync) can be turned off.
 
 ## 0.2
 

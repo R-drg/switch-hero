@@ -1,9 +1,10 @@
-# Switch Hero 0.2
+# Switch Hero 0.3
 
 A five-fret rhythm game for Nintendo Switch homebrew, written in C++17 and SDL2.
 It plays Clone Hero-style song folders, downloads charts from
-[Chorus Encore](https://www.enchor.us/) in-game, and works with Joy-Cons, a Pro
-Controller or a Wii guitar. It is an independent implementation, not a port of
+[Chorus Encore](https://www.enchor.us/) in-game, works with Joy-Cons, a Pro
+Controller or a Wii guitar, and seats up to four players in split screen. It
+speaks English and Brazilian Portuguese. It is an independent implementation, not a port of
 Clone Hero's proprietary source.
 
 ![Gameplay](docs/gameplay.jpg)
@@ -13,17 +14,20 @@ Clone Hero's proprietary source.
 | ![Title menu](docs/title.jpg) | ![Song list](docs/song-list.jpg) |
 | **Difficulty select** | **Results** |
 | ![Difficulty select](docs/difficulty.jpg) | ![Results](docs/results.jpg) |
+| **Customize** | **Practice** |
+| ![Customize](docs/customize.jpg) | ![Practice](docs/practice.jpg) |
+| **Multiplayer lobby** | **Four players** |
+| ![Multiplayer lobby](docs/lobby.jpg) | ![Four players](docs/multiplayer.jpg) |
 
 What changed in this release is in [CHANGELOG.md](CHANGELOG.md).
 
 **Status:** the desktop build and all automated tests pass, and the Switch build
-cross-compiles with devkitPro into `build-switch/switch-hero.nro`. Early console
-tests confirmed startup and song discovery. The latest build still needs a full
-run on hardware, covering audio, smooth scrolling, calibration and chart
-downloads. New in 0.2 and still untested on a console: the input thread's
-press timing, the MP3 decode fix, frame pacing with the new effects (turn on
-the timing overlay to check), and how long the startup gem render takes. Don't
-treat the desktop tests as a Switch performance benchmark.
+cross-compiles with devkitPro into `build-switch/switch-hero.nro`. Split-screen
+multiplayer was played start to finish on a docked console with two and four
+players. New in 0.3 and still untested on a console: rumble, the draw batching
+and split-screen frame pacing (turn on the timing overlay to check), start-up
+from the song-list cache, and practice loops on MP3 songs. Don't treat the
+desktop tests as a Switch performance benchmark.
 
 ## Install on a Switch
 
@@ -69,8 +73,8 @@ delete the old folder so the Homebrew Menu only lists Switch Hero.
   [Calibration](#calibration)).
 - **In-game chart downloads** from Chorus Encore (see
   [Downloading charts](#downloading-charts)).
-- **Cut-jewel gems and classic fire.** Gems are rendered in 3D once at
-  startup, on background threads. A ray marcher lights each sprite pixel of a
+- **Cut-jewel gems and classic fire.** Gems are rendered in 3D ahead of time
+  and ship in `assets/gems.bin`. A ray marcher lights each sprite pixel of a
   cut jewel in a gunmetal bezel: eight crown facets rise to a flat table, and
   each facet catches the room and the stage light up the highway differently.
   The result is saved as textures, so a gem costs one sprite per frame. Gems
@@ -96,8 +100,20 @@ delete the old folder so the Homebrew Menu only lists Switch Hero.
   strum, and Wii guitar over Bluetooth.
 - **Its own look.** A 2000s bedroom full of burned CD-Rs, duct tape and grip
   tape, with every texture generated in code (see [Look](#look)).
-- **Split-screen multiplayer**, two to four players, docked only (see
-  [Multiplayer](#multiplayer)).
+- **Split-screen multiplayer**, two to four players, docked only, each with
+  their own highway and note colours (see [Multiplayer](#multiplayer)).
+- **Practice mode.** Loop any run of sections with a count-in and see each
+  loop's accuracy (see [Practice](#practice)).
+- **Solos and section breakdown.** Solos get a live counter and a
+  "SOLO 94%" call-out with a bonus, and the results screen breaks a run down by
+  section (see [Solos and sections](#solos-and-sections)).
+- **Customization.** 13 highways and 24 note colour palettes (see
+  [Customization](#customization)).
+- **Whammy, rumble and hit ratings.** Whammy fills star power on star
+  sustains; controllers buzz on misses and pulse for star power; the
+  PERFECT/GREAT/GOOD pop-up can be turned off.
+- **English and Portuguese.** The first start asks which; Options -> Language
+  changes it.
 
 ## Multiplayer
 
@@ -114,13 +130,14 @@ In the lobby every seat is driven by its own controller, all at once:
 | Action | Button |
 | --- | --- |
 | Join / leave | A / B |
-| Instrument | Left / Right |
-| Difficulty | Up / Down |
+| Pick a row (part, difficulty, highway, note colours) | Up / Down or strum |
+| Change it | Left / Right |
 | Start | Plus |
 
-Each player picks their own instrument and difficulty, and gets the hit window
-that difficulty earns, so an expert and a beginner can share a song. Difficulty
-stepping skips tiers the chart does not carry.
+Each player picks their own instrument, difficulty, highway and note colours,
+and gets the hit window their difficulty earns, so an expert and a beginner can
+share a song. Difficulty stepping skips tiers the chart does not carry. The
+highway and colours are kept for the next song.
 
 The screen splits side by side for two players and into quadrants for three or
 four; with three, the fourth quadrant is left empty. Each board keeps its own
@@ -177,7 +194,8 @@ always works as back.
 
 ### Menus
 
-The game follows the Guitar Hero flow. The title menu offers **Quickplay**,
+The game follows the Guitar Hero flow. The first start asks for a language.
+The title menu offers **Quickplay**, **Practice**, **Multiplayer**,
 **Download songs**, **Options** and **Quit**. Quickplay opens the song list.
 Picking a song asks for an **instrument** (skipped when the chart only has
 one part), then a **difficulty**. All four difficulties are always listed,
@@ -194,18 +212,22 @@ second, so frets still being played as a song ends or fails (B is the orange
 fret) can't skip past it; the button hints appear once it's listening. The song list opens on the last song
 you played.
 
-**Options** has four pages, and each row explains itself at the bottom of the
+**Options** has six pages, and each row explains itself at the bottom of the
 panel:
 
-- **Gameplay:** controller mode, no fail, note speed, lefty flip (mirrors
-  the highway so green is on the right).
+- **Gameplay:** controller mode, no fail, hit window, note speed, lefty flip
+  (mirrors the highway so green is on the right), hit ratings (the
+  PERFECT/GREAT/GOOD pop-up) and rumble.
 - **Audio:** music volume (songs and previews) and sound effects volume.
 - **Audio / video sync:** calibrate audio, audio offset, calibrate video,
-  visual offset, and a timing overlay that shows average and worst frame
-  times over each second (plus audio clock drift during a song), for checking
-  smoothness on the console.
+  visual offset, a timing overlay that shows average and worst frame times
+  over each second (plus audio clock drift during a song), and film grain.
 - **Controls:** fret buttons, controller test, reset all options (press A
   twice to confirm).
+- **Customize:** highway and note colours, with a live preview.
+- **Language:** English or Português.
+
+On the results screen, **Y** switches to a section-by-section view.
 
 Options are saved when you leave the options screen.
 
@@ -217,6 +239,25 @@ On the Switch, buttons are sampled on their own thread about once a
 millisecond, so a press is judged when it arrived rather than rounded to the
 next frame. That removes up to 16.7 ms of rounding, but not the controller's
 own report interval.
+
+### Practice
+
+**Practice** on the title menu picks a song, part and difficulty like
+Quickplay, then asks where the loop starts and where it ends: A marks the
+first section, A again the last (B steps back). The loop plays with a
+count-in and starts over by itself, showing the loop number and the last
+loop's accuracy where the rock meter would be. Practice can't fail and records
+no scores. Pause offers restart loop and change sections. Charts that name no
+sections are split into eight-measure parts.
+
+### Solos and sections
+
+Section names come from the chart (`.chart` `[Events]`, or MIDI EVENTS text,
+including Rock Band's `prc_` names). Solos come from `E solo`/`soloend` or MIDI
+note 103 where 116 carries star power. During a solo the rails turn blue and a
+counter shows notes hit so far; at its end the game calls out the percentage
+("SOLO 94%", or "PERFECT SOLO!") and pays 100 points per note hit, outside the
+multiplier.
 
 ### Press-to-hit mode
 
@@ -321,14 +362,20 @@ charts. Only charts with a lead guitar part are listed.
   keyboard. On desktop, type the search and press Enter.
 - **Up/down** or strum moves through the results. More results load as you
   near the end of the list.
-- **A** downloads the selected chart into the songs folder, as
-  `Artist - Name (Charter)`.
-- **B** (or Minus) cancels a download that's running. Otherwise it goes back. If
-  anything was downloaded, it goes to the song list, which rescans and selects
-  the newest download.
+- **A** queues the selected chart for download (or takes it off the queue)
+  into the songs folder, as `Artist - Name (Charter)`. Charts download one after
+  another.
+- **X** cancels everything: the download running and the queue.
+- **B** (or Minus) goes back. A running queue keeps downloading behind the
+  menus, and its songs join the song list as they finish. If the queue is done,
+  going back opens the song list on the newest download.
 
 Each row shows the guitar intensity rating (six pips, or `?` when the chart
-has no rating), the song length, and **in library** once you have it.
+has no rating) and **in library**, **downloading** or **queued #n**. The panel
+beside the list shows the highlighted chart: cover, album, year, genre,
+length and charter, each five-fret part with its intensity and note count per
+difficulty, the guitar's peak notes per second, solos, open notes and taps,
+and any parts the game can't play.
 
 Charts arrive as `.sng` packages. The game unpacks them in a staging folder and
 moves them into place only when complete, so a failed or cancelled download
@@ -337,7 +384,7 @@ game doesn't play them. The package's metadata becomes `song.ini`.
 
 The Switch needs an internet connection. Networking only starts the first time
 you open the download screen. HTTPS uses the console's own SSL service.
-Requests identify the game as `switch-hero/0.2`.
+Requests identify the game as `switch-hero/0.3`.
 
 ### Deleting songs
 

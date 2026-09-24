@@ -6,48 +6,35 @@ Nintendo Switch homebrew, compatible with extracted Clone Hero song folders.
 Read README.md and docs/verification.md first. This is a prototype, not a port
 of Clone Hero or Guitar Hero source. Do not claim full format or score parity.
 
-## 0.2 state (2026-09-23)
-Tagged `0.2`. What changed is in CHANGELOG.md. Desktop verification: 123
-core checks, 1,213 timing checks, audio codec + seek + preview tests (the
-local ffmpeg lacks libvorbis, so the Vorbis fixture is made with its native
-encoder), guitar and enchor tests, and both smoke runs. The Switch
-cross-build passes with no warnings. Details in docs/verification.md.
+## 0.3 state (2026-09-24)
+Tagged `0.3`. What changed is in CHANGELOG.md. Desktop verification: 155
+core checks, 1,213 timing checks, 33 download checks, audio codec + seek +
+preview + practice rewind tests, guitar, multiplayer and gems tests, and both
+smoke runs. The Switch cross-build passes with no warnings. Details in
+docs/verification.md.
 
 Unverified on hardware, in priority order:
+- **Split-screen frame pacing.** Draws are now batched (four players went
+  from 550-790 draw calls a frame to about 140 on desktop), but the console's
+  worst frame with four players was never measured. Turn on the timing overlay
+  on a dense chart; if it is bad, turn off Film grain first.
 - **Multiplayer with a pad joining or dropping mid-song.** Two and four players
-  were played start to finish on a console, docked, including the docked-only
-  gate, the lobby, the count-in, pause, the standings and single player
-  afterwards. What was not tried is a controller connecting or disconnecting
-  while a song runs. A wrong `pressAt` index would show up as one player's
-  timing being consistently off while the rest are fine.
-- **Split-screen frame pacing under load.** Four boards played correctly, but
-  the worst frame was never measured, and this console's pacing had not been
-  measured before this change either. Turn on the timing overlay on a dense
-  chart with four players. If it is bad, turn off Options -> Audio / video sync
-  -> Film grain first, then cut the HUD before the boards.
-- **Split-screen layout at other output resolutions.** `look::setViewport`
-  composes a scale and viewport on top of the logical-size letterbox and
-  re-derives it every call, so it follows the console changing output
-  resolution on its way into the dock. Two and four panes were confirmed square
-  on a 1080p television; other modes were not tried.
-- **Switch input thread** (`Controller` in `src/main.cpp`). Buttons are
-  sampled every ~1 ms on core 1, and presses are stamped on the `now()` clock
-  and fed to `pressTime()`. Check press timing with the results screen's timing
-  tip, and that the pad still works after sleep/resume.
-- **MP3 decoding** (`Mp3Decoder` in `src/audio.cpp`). Float output is now set
-  before `mpg123_open`; the old order produced 16-bit samples read as float
-  (half-length noise) with desktop libmpg123 1.33. Headerless files are still
-  scanned once.
-- **Frame pacing.** Turn on Options -> Audio / video sync -> Timing overlay.
-  The worst frame goes red above 20 ms. `look::grade()`'s grain loop is still
-  the first thing to cut.
-- **Gem sprites** ship pre-rendered in `assets/gems.bin`. Ray-marching them
-  at every launch cost several seconds of both spare cores on the console and
-  starved everything else there. Change `gem3d::render()`, then bump
-  `RenderVersion` and run `switch-hero --bake-gems assets/gems.bin`. The
-  `gems` CTest fails until you do. Without the file the game still renders
-  them itself, just slowly. `prepareGems()` colours and uploads them when a
-  song or video calibration starts.
+  were played start to finish on a console, docked. A controller connecting or
+  disconnecting while a song runs was not tried; a wrong `pressAt` index would
+  show as one player's timing being consistently off.
+- **Rumble** (`Controller::rumble` in `src/main.cpp`): libnx vibration handles
+  for handheld, Joy-Con pair and Pro Controller; only player one buzzes.
+- **Start-up from the song-list cache** (`library.cache`) and the background
+  card check; and background loaders on cores 1-2 at priority 0x30, gem
+  renders gone (pre-baked in `assets/gems.bin`).
+- **Practice loops on MP3 songs.** `Audio::rewind` seeks the open decoders;
+  formats without a native seek decode from the start.
+- **Switch input thread**, **MP3 decoding** and **split-screen layout at other
+  output resolutions**, as listed for 0.2.
+- **Gem sprites** ship pre-rendered in `assets/gems.bin`. Change
+  `gem3d::render()`, then bump `RenderVersion` and run
+  `switch-hero --bake-gems assets/gems.bin`; the `gems` CTest fails until you
+  do.
 
 Design decisions from the owner to keep:
 - Gems are cut jewels in a gunmetal bezel, with a white table for hammer-ons
