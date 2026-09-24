@@ -116,6 +116,62 @@ int main(int argc, char **argv) {
         check(ns[4].mask == 32 && ns[4].kind == Kind::Tap, "open tap note");
         check(ns[3].phrase == 0 && ns[4].phrase == -1, "star phrase end exclusive");
         near(ns[0].end[0], 2, "sustain crosses tempo change");
+        {
+            // Sections and solos, from both chart formats.
+            for (const Song *song : {&a, &b}) {
+                check(song->sections.size() == 2 && song->sections[0].name == "Intro" &&
+                          song->sections[1].name == "Verse 1a",
+                      "sections parsed with readable names");
+                near(song->sections[1].time, 1, "section time follows the tempo map");
+                const auto &notes = song->tracks[0].notes;
+                check(song->tracks[0].solos.size() == 1 && notes[2].solo == -1 && notes[3].solo == 0 &&
+                          notes[4].solo == 0 && notes[5].solo == -1,
+                      "solo range covers its notes, end inclusive");
+            }
+            check(b.tracks[0].phrases.size() == 1, "note 103 is a solo, not star power, when 116 is present");
+            check(prettySection("section verse_2b") == "Verse 2b" && prettySection("prc_gtr_solo") == "Gtr Solo" &&
+                      prettySection("  ") == "Section",
+                  "section names");
+            Song bare = a;
+            bare.sections.clear();
+            const auto chunks = practiceSections(bare);
+            check(!chunks.empty() && chunks[0].name == "Part 1" && chunks[0].tick == 0,
+                  "songs without sections still offer practice chunks");
+            check(practiceSections(a).size() == 2, "named sections are used for practice");
+        }
+        {
+            // A solo pays a flat bonus per note hit when its last note is judged.
+            Session solo(a, a.tracks[0]);
+            solo.gamepadMode = true;
+            for (size_t i = 0; i < ns.size(); ++i) {
+                const bool play = i != 4; // miss one solo note
+                const uint8_t frets = ns[i].mask == 32 ? 0 : ns[i].mask;
+                solo.update(ns[i].time, play ? frets : 0, false, play && ns[i].mask == 32);
+                solo.update(ns[i].time + .01, 0, false);
+            }
+            solo.update(3, 0, false);
+            check(solo.lastSolo.index == 0 && solo.lastSolo.total == 2 && solo.lastSolo.hit == 1 &&
+                      std::abs(solo.soloBonus - 100) < 1e-9,
+                  "solo result and bonus");
+            // The section breakdown splits the run at the second section.
+            const auto stats = sectionStats(a, solo);
+            check(stats.size() == 2 && stats[0].name == "Intro" && stats[0].total == 4 && stats[1].total == 2 &&
+                      stats[1].hit == 1,
+                  "section breakdown");
+        }
+        {
+            // Practice starts part-way in: earlier notes are set aside, not missed.
+            Session practice(a, a.tracks[0]);
+            practice.noFail = false;
+            practice.startAt(.9);
+            practice.update(.95, 0, false); // before note 4 (at 1 s) is due
+            check(practice.misses == 0 && practice.combo == 0 && !practice.failed && practice.state[0].skipped &&
+                      practice.state[3].skipped && !practice.state[4].skipped,
+                  "practice skips earlier notes without misses");
+            check(practice.phraseFailed[0], "a star phrase cut short cannot pay out");
+            check(practice.soloTotal[0] == 1, "a solo cut short counts what is left");
+            check(sectionStats(a, practice).empty(), "skipped notes are left out of the breakdown");
+        }
         check(b.tracks[0].notes.size() == ns.size(), "MIDI/chart note count equivalence");
         for (size_t i = 0; i < ns.size(); ++i) {
             auto &x = ns[i];

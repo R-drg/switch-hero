@@ -20,10 +20,17 @@ chart='''[Song]
   0 = B 120000
   384 = B 60000
 }
+[Events]
+{
+  0 = E "section intro"
+  384 = E "section verse_1a"
+}
 [ExpertSingle]
 {
   0 = N 0 576
   0 = S 2 384
+  192 = E solo
+  384 = E soloend
   48 = N 1 0
   96 = N 1 0
   96 = N 5 0
@@ -58,10 +65,12 @@ def track(events):
     out+=b'\x00\xff\x2f\x00'
     return b'MTrk'+struct.pack('>I',len(out))+out
 events=[(0,b'\xff\x03\x0bPART GUITAR'),(0,b'\xff\x01\x10[ENHANCED_OPENS]')]
-for start,end,pitch in [(0,576,96),(48,49,97),(96,97,97),(192,384,97),(192,576,98),(384,385,95),(576,577,100),(0,384,116),(96,97,101),(384,385,104)]:
+for start,end,pitch in [(0,576,96),(48,49,97),(96,97,97),(192,384,97),(192,576,98),(384,385,95),(576,577,100),(0,384,116),(96,97,101),(384,385,104),(192,385,103)]:
     events.extend([(start,bytes([0x90,pitch,100])),(end,bytes([0x80,pitch,0]))])
 tempo=track([(0,b'\xff\x51\x03\x07\xa1\x20'),(384,b'\xff\x51\x03\x0f\x42\x40')])
-mid=b'MThd'+struct.pack('>IHHH',6,1,2,192)+tempo+track(events)
+# Section names live in their own EVENTS track: plain and Rock Band spellings.
+names=track([(0,b'\xff\x03\x06EVENTS'),(0,b'\xff\x01\x0f[section intro]'),(384,b'\xff\x01\x0e[prc_verse_1a]')])
+mid=b'MThd'+struct.pack('>IHHH',6,1,3,192)+tempo+track(events)+names
 (root/'midi'/'notes.mid').write_bytes(mid)
 
 # Running status survives a meta event (a known chart-file quirk).

@@ -23,6 +23,7 @@ struct Note {
     std::array<double, 6> end{};
     Kind kind = Kind::Strum;
     int phrase = -1;
+    int solo = -1; // index into Track::solos
 };
 struct Phrase {
     Tick start, end;
@@ -32,6 +33,14 @@ struct Track {
     int difficulty = 3;
     std::vector<Note> notes;
     std::vector<Phrase> phrases;
+    std::vector<Phrase> solos; // guitar solo ranges, scored with a bonus
+};
+// A named stretch of the song ("Verse 1", "Guitar Solo"), from the chart's
+// section markers. Practice mode loops them; the results break down by them.
+struct Section {
+    Tick tick = 0;
+    double time = 0;
+    std::string name;
 };
 struct Song {
     fs::path folder, chart;
@@ -43,6 +52,7 @@ struct Song {
     std::map<std::string, std::string> metadata;
     std::vector<Tempo> tempos;
     std::vector<Track> tracks;
+    std::vector<Section> sections; // sorted by time; empty when the chart names none
     std::vector<fs::path> audio;
     std::vector<std::string> warnings;
     double seconds(Tick tick) const;
@@ -50,6 +60,12 @@ struct Song {
 };
 std::string lower(std::string s);
 std::string trim(std::string s);
+// A chart's section label as a player reads it: "section verse_1a" and Rock
+// Band's "prc_verse_1a" both become "Verse 1a".
+std::string prettySection(std::string raw);
+// The stretches practice mode offers: the chart's sections, or when it names
+// none, chunks of eight measures ("Part 1", "Part 2", ...) so every song has some.
+std::vector<Section> practiceSections(const Song &song);
 Song loadSong(const fs::path &folder);
 // Title and artist only, without parsing the chart: song libraries can hold
 // hundreds of songs and the list needs nothing else to draw.

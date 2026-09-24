@@ -12,6 +12,8 @@ struct NoteState {
     // Only meaningful once result == 1.
     double error = 0;
     int tier = 0; // 0 none, 1 good, 2 great, 3 perfect
+    // Before the start of a practice loop: never played, never judged, not drawn.
+    bool skipped = false;
 }; // 0 pending, 1 hit, -1 missed
 struct Session {
     const Song *song;
@@ -78,12 +80,63 @@ struct Session {
         const double d = std::abs(err);
         return d <= window * perfectShare ? 3 : d <= window * greatShare ? 2 : 1;
     }
+    // Solos, as in the originals: every note hit inside one is worth a flat
+    // 100 more when the solo ends, whatever the multiplier.
+    static constexpr double soloNoteBonus = 100;
+    std::vector<int> soloHit, soloTotal, soloJudged;
+    std::vector<double> soloStart, soloEnd; // first and last note times
+    struct SoloResult {
+        int index = -1, hit = 0, total = 0;
+        double bonus = 0, at = -1e9; // `at` is the song time it ended
+    } lastSolo;
+    double soloBonus = 0; // all solo bonuses so far
     Session(const Song &s, const Track &t)
         : song(&s), track(&t), state(t.notes.size()), phraseRemaining(t.phrases.size()),
-          phraseFailed(t.phrases.size(), false) {
-        for (auto &n : t.notes)
+          phraseFailed(t.phrases.size(), false), soloHit(t.solos.size()), soloTotal(t.solos.size()),
+          soloJudged(t.solos.size()), soloStart(t.solos.size(), 1e300), soloEnd(t.solos.size(), -1e300) {
+        for (auto &n : t.notes) {
             if (n.phrase >= 0)
                 ++phraseRemaining[n.phrase];
+            if (n.solo >= 0 && size_t(n.solo) < soloTotal.size()) {
+                auto k = size_t(n.solo);
+                ++soloTotal[k];
+                soloStart[k] = std::min(soloStart[k], n.time), soloEnd[k] = std::max(soloEnd[k], n.time);
+            }
+        }
+    }
+    // The solo being played at `time`, for the live counter, or -1.
+    int activeSolo(double time) const {
+        for (size_t k = 0; k < soloTotal.size(); ++k)
+            if (soloTotal[k] > 0 && soloJudged[k] < soloTotal[k] && time >= soloStart[k] - 1 && time <= soloEnd[k] + .3)
+                return int(k);
+        return -1;
+    }
+    // Practice starts part-way in: every note before `time` is set aside
+    // rather than missed, so it breaks no combo, drains no meter and never
+    // fails the run. A star phrase or solo cut short cannot pay out in full,
+    // so phrases lose their payout and solos count only what is left of them.
+    void startAt(double time) {
+        size_t i = 0;
+        for (; i < state.size() && track->notes[i].time < time; ++i) {
+            auto &st = state[i];
+            st.result = 1, st.held = 0, st.judgedAt = -1, st.skipped = true;
+            const auto &n = track->notes[i];
+            if (n.phrase >= 0)
+                phraseFailed[size_t(n.phrase)] = true;
+            if (n.solo >= 0 && size_t(n.solo) < soloTotal.size()) {
+                auto k = size_t(n.solo);
+                --soloTotal[k];
+                soloStart[k] = 1e300;
+            }
+        }
+        // Solos that begin before `time` start counting from the first note left.
+        for (size_t j = i; j < state.size(); ++j) {
+            const auto &n = track->notes[j];
+            if (n.solo >= 0 && size_t(n.solo) < soloStart.size())
+                soloStart[size_t(n.solo)] = std::min(soloStart[size_t(n.solo)], n.time);
+        }
+        next = std::max(next, i);
+        lastTime = std::max(lastTime, time);
     }
     // How wide the hit window is for a difficulty (0 easy to 3 expert) and the
     // player's choice (0 strict, 1 normal, 2 lenient). Easier charts forgive
@@ -137,6 +190,15 @@ struct Session {
         } else {
             ++misses;
             penalise();
+        }
+        if (n.solo >= 0 && size_t(n.solo) < soloTotal.size()) {
+            auto k = size_t(n.solo);
+            soloHit[k] += hit ? 1 : 0;
+            if (++soloJudged[k] == soloTotal[k]) {
+                const double bonus = soloNoteBonus * soloHit[k];
+                score += bonus, soloBonus += bonus;
+                lastSolo = {int(k), soloHit[k], soloTotal[k], bonus, now};
+            }
         }
         if (n.phrase >= 0) {
             auto p = size_t(n.phrase);
@@ -304,4 +366,33 @@ struct Session {
     }
     bool complete(double time) const { return next == state.size() && time > song->duration + 1; }
 };
+
+// How a run went section by section, for the results screen: notes hit out
+// of notes judged in each named section. Notes before the first section count
+// towards it; sections with no notes are left out.
+struct SectionStat {
+    std::string name;
+    int hit = 0, total = 0;
+};
+inline std::vector<SectionStat> sectionStats(const Song &song, const Session &session) {
+    std::vector<SectionStat> out;
+    const auto &sections = song.sections;
+    if (sections.empty())
+        return out;
+    for (const auto &s : sections)
+        out.push_back({s.name, 0, 0});
+    size_t k = 0;
+    for (size_t i = 0; i < session.state.size(); ++i) {
+        const auto &st = session.state[i];
+        if (!st.result || st.skipped)
+            continue;
+        const double t = session.track->notes[i].time;
+        while (k + 1 < sections.size() && t >= sections[k + 1].time)
+            ++k;
+        ++out[k].total;
+        out[k].hit += st.result == 1 ? 1 : 0;
+    }
+    out.erase(std::remove_if(out.begin(), out.end(), [](const SectionStat &s) { return s.total == 0; }), out.end());
+    return out;
+}
 } // namespace fret

@@ -20,6 +20,27 @@ std::string trim(std::string s) {
         return {};
     return s.substr(a, s.find_last_not_of(" \t\r\n") - a + 1);
 }
+std::string prettySection(std::string raw) {
+    raw = trim(raw);
+    for (const char *prefix : {"section ", "section_", "prc_"})
+        if (lower(raw).rfind(prefix, 0) == 0) {
+            raw = raw.substr(std::string(prefix).size());
+            break;
+        }
+    std::string out;
+    bool start = true;
+    for (char c : raw) {
+        if (c == '_')
+            c = ' ';
+        if (c == ' ' && (out.empty() || out.back() == ' '))
+            continue;
+        out += start && c >= 'a' && c <= 'z' ? char(c - 'a' + 'A') : c;
+        start = c == ' ';
+    }
+    while (!out.empty() && out.back() == ' ')
+        out.pop_back();
+    return out.empty() ? "Section" : out;
+}
 static std::string unquote(std::string s) {
     s = trim(s);
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
@@ -141,6 +162,8 @@ struct RawTrack {
     std::vector<Raw> notes;
     std::vector<Marker> markers;
     std::vector<Phrase> phrases;
+    std::vector<Phrase> solos;
+    Tick soloOpen = -1; // a .chart "solo" event still waiting for its "soloend"
 };
 static std::string key(const std::string &i, int d) { return i + ":" + std::to_string(d); }
 static RawTrack &rawTrack(std::map<std::string, RawTrack> &ts, const std::string &i, int d) {
@@ -217,6 +240,18 @@ static void parseChart(Song &s, std::map<std::string, RawTrack> &tracks) {
             }
             continue;
         }
+        if (section == "Events") {
+            // tick = E "section Verse 1"
+            std::istringstream event(v);
+            std::string type;
+            event >> type;
+            std::string text;
+            std::getline(event >> std::ws, text);
+            text = unquote(text);
+            if (type == "E" && (lower(text).rfind("section ", 0) == 0 || lower(text).rfind("prc_", 0) == 0))
+                s.sections.push_back({integer(k), 0, prettySection(text)});
+            continue;
+        }
         std::string inst;
         int diff = 0;
         if (section != "SyncTrack" && !chartTrack(section, inst, diff))
@@ -242,6 +277,12 @@ static void parseChart(Song &s, std::map<std::string, RawTrack> &tracks) {
                 warn(s, "Unknown five-fret note markers were ignored");
         } else if (type == "S" && a == "2")
             tr.phrases.push_back({tick, tick + integer(b)});
+        else if (type == "E" && a == "solo")
+            tr.soloOpen = tick;
+        else if (type == "E" && a == "soloend" && tr.soloOpen >= 0) {
+            tr.solos.push_back({tr.soloOpen, tick});
+            tr.soloOpen = -1;
+        }
     }
     if (!resolution)
         throw std::runtime_error(".chart is missing Song/Resolution");
@@ -314,6 +355,7 @@ static void parseMidi(Song &s, std::map<std::string, RawTrack> &tracks) {
         };
         std::vector<MN> notes;
         std::vector<SX> sx;
+        std::vector<std::pair<Tick, std::string>> texts;
         std::map<int, Tick> active;
         std::string name;
         Tick tick = 0;
@@ -336,6 +378,8 @@ static void parseMidi(Song &s, std::map<std::string, RawTrack> &tracks) {
                 auto text = tr.bytes(tr.vlq());
                 if (type == 3)
                     name = trim(text);
+                else if (type >= 1 && type <= 15)
+                    texts.push_back({tick, text});
                 if (type >= 1 && type <= 15 && (text == "[ENHANCED_OPENS]" || text == "ENHANCED_OPENS"))
                     opens = true;
                 if (type == 0x51) {
@@ -387,6 +431,16 @@ static void parseMidi(Song &s, std::map<std::string, RawTrack> &tracks) {
         static const std::map<std::string, std::string> names = {
             {"PART GUITAR", "Guitar"}, {"T1 GEMS", "Guitar"},         {"PART BASS", "Bass"},
             {"PART RHYTHM", "Rhythm"}, {"PART GUITAR COOP", "Co-op"}, {"PART KEYS", "Keys"}};
+        if (name == "EVENTS")
+            for (auto &[at, text] : texts) {
+                // "[section verse_1]", "section verse_1" or Rock Band's "[prc_verse_1]".
+                std::string t = trim(text);
+                if (t.size() > 1 && t.front() == '[' && t.back() == ']')
+                    t = t.substr(1, t.size() - 2);
+                const std::string l = lower(t);
+                if (l.rfind("section ", 0) == 0 || l.rfind("section_", 0) == 0 || l.rfind("prc_", 0) == 0)
+                    s.sections.push_back({at, 0, prettySection(t)});
+            }
         auto ni = names.find(name);
         if (ni == names.end())
             continue;
@@ -413,6 +467,10 @@ static void parseMidi(Song &s, std::map<std::string, RawTrack> &tracks) {
                     out.markers.push_back({x.start, x.end, 3, false});
                 if (x.pitch == sp)
                     out.phrases.push_back({x.start, x.end});
+                // Where 116 carries star power (Rock Band and later), 103 marks solos;
+                // older charts used 103 for star power itself.
+                else if (x.pitch == 103)
+                    out.solos.push_back({x.start, x.end});
                 if (x.pitch >= 120)
                     warn(s, "Trill/tremolo/BRE special scoring is not implemented; notes play normally");
             }
@@ -468,6 +526,9 @@ static void finish(Song &s, std::map<std::string, RawTrack> &raw) {
         auto &t = s.tempos[i];
         t.seconds = prev.seconds + double(t.tick - prev.tick) * 60 / (s.resolution * prev.bpm);
     }
+    for (auto &section : s.sections)
+        section.time = s.seconds(section.tick);
+    std::stable_sort(s.sections.begin(), s.sections.end(), [](const Section &a, const Section &b) { return a.tick < b.tick; });
     s.offset = s.metadata.count("delay")    ? decimal(s.metadata.at("delay")) / 1000
                : s.metadata.count("offset") ? decimal(s.metadata.at("offset"))
                                             : 0;
@@ -492,6 +553,8 @@ static void finish(Song &s, std::map<std::string, RawTrack> &raw) {
         tr.difficulty = rt.difficulty;
         tr.phrases = rt.phrases;
         std::sort(tr.phrases.begin(), tr.phrases.end(), [](auto a, auto b) { return a.start < b.start; });
+        tr.solos = rt.solos;
+        std::sort(tr.solos.begin(), tr.solos.end(), [](auto a, auto b) { return a.start < b.start; });
         std::map<Tick, Note> groups;
         if (rt.notes.size() > 1000000)
             throw std::runtime_error("Track exceeds one million notes");
@@ -546,6 +609,12 @@ static void finish(Song &s, std::map<std::string, RawTrack> &raw) {
                 if (n.tick >= tr.phrases[p].start &&
                     (n.tick < tr.phrases[p].end || n.tick == tr.phrases[p].start)) {
                     n.phrase = int(p);
+                    break;
+                }
+            // Solo ends are inclusive: a .chart soloend sits on the last note.
+            for (size_t p = 0; p < tr.solos.size(); ++p)
+                if (n.tick >= tr.solos[p].start && n.tick <= tr.solos[p].end) {
+                    n.solo = int(p);
                     break;
                 }
             tr.notes.push_back(n);
@@ -758,6 +827,28 @@ std::string sortKey(const std::string &text) {
 char jumpLetter(const std::string &key) {
     const char c = key.empty() ? '#' : key[0];
     return c >= 'a' && c <= 'z' ? char(c - 'a' + 'A') : '#';
+}
+std::vector<Section> practiceSections(const Song &song) {
+    // Sections that start after the last note are empty, and any before the
+    // first note would only loop silence.
+    double first = 1e300, last = 0;
+    for (const auto &t : song.tracks)
+        if (!t.notes.empty())
+            first = std::min(first, t.notes.front().time), last = std::max(last, t.notes.back().time);
+    std::vector<Section> out;
+    for (const auto &s : song.sections)
+        if (s.time <= last)
+            out.push_back(s);
+    if (!out.empty())
+        return out;
+    // No named sections: eight measures of four beats at a time, from the start.
+    const Tick chunk = Tick(song.resolution) * 4 * 8;
+    const Tick end = Tick(song.tickAt(std::max(last, 0.0))) + 1;
+    int part = 1;
+    for (Tick t = 0; t < end; t += chunk)
+        out.push_back({t, song.seconds(t), "Part " + std::to_string(part++)});
+    (void)first;
+    return out;
 }
 std::string difficultyName(int d) {
     static const char *names[] = {"Easy", "Medium", "Hard", "Expert"};
