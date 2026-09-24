@@ -7,9 +7,10 @@ the repository root after changing a font or size (requires Pillow):
     python3 tools/make_fonts.py
 
 Format (little endian): "FNT1", u16 atlas width, u16 atlas height, u16 pixel
-size, u16 line height, u16 ascent, u16 glow padding, u16 glyph count, then per glyph (ASCII 32
-upward) i16 x, y, w, h, xoff, yoff and u16 advance in 1/16 px, then the
-alpha atlas and a blurred glow atlas, one byte per pixel each.
+size, u16 line height, u16 ascent, u16 glow padding, u16 glyph count, then per glyph (Latin-1
+code 32 upward) i16 x, y, w, h, xoff, yoff and u16 advance in 1/16 px, then the
+alpha atlas and a blurred glow atlas, one byte per pixel each. The C1 control
+codes (127-159) are empty slots, so a glyph's index is always its code - 32.
 """
 import struct
 from pathlib import Path
@@ -22,7 +23,7 @@ FONTS = [
     ("PermanentMarker-Regular.ttf", "marker.font", 56),
     ("RussoOne-Regular.ttf", "body.font", 40),
 ]
-FIRST, LAST = 32, 126
+FIRST, LAST = 32, 255  # printable ASCII and Latin-1, for Portuguese accents
 ATLAS_W = 1024
 
 
@@ -33,6 +34,9 @@ def build(ttf, out, size):
     glyphs, x, y, row = [], pad, pad, 0
     for code in range(FIRST, LAST + 1):
         ch = chr(code)
+        if 127 <= code < 160:
+            glyphs.append((ch, 0, 0, 0, 0, 0, 0, 0))
+            continue
         left, top, right, bottom = font.getbbox(ch)
         w, h = max(0, right - left), max(0, bottom - top)
         if x + w + pad > ATLAS_W:

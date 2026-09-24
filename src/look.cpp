@@ -158,21 +158,18 @@ SDL_Texture *alphaTexture(const std::vector<Uint8> &a, int w, int h) {
     }
     return upload(c, SDL_BLENDMODE_BLEND);
 }
+// Glyphs are indexed by Latin-1 code. Fonts baked before the Latin-1 range
+// was added stop at '~'; there, and on the empty control slots, draw '?'.
 const Glyph *glyphFor(const Font &f, unsigned char ch) {
-    if (ch < 32 || ch - 32 >= int(f.glyphs.size()))
+    if (ch < 32 || ch - 32 >= int(f.glyphs.size()) || (ch >= 127 && ch < 160))
         ch = '?';
     return &f.glyphs[ch - 32];
 }
-// The baked fonts only hold printable ASCII. Chart titles are UTF-8, so fold
-// accented Latin letters and typographic punctuation to their plain forms and
-// show anything else as a single '?'.
+// The baked fonts hold printable ASCII and Latin-1, which covers Portuguese
+// and most chart titles. Text arrives as UTF-8, so turn it into one Latin-1
+// byte per character, fold typographic punctuation to its plain form and show
+// anything else as a single '?'.
 std::string sanitize(const std::string &s) {
-    // Latin-1 letters U+00C0..U+00FF, in order ('?' where there is no letter).
-    static const char *const latin1[64] = {
-        "A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",
-        "D", "N", "O", "O", "O", "O", "O", "x", "O", "U", "U", "U", "U", "Y", "Th", "ss",
-        "a", "a", "a", "a", "a", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",
-        "d", "n", "o", "o", "o", "o", "o", "/", "o", "u", "u", "u", "u", "y", "th", "y"};
     std::string out;
     for (size_t i = 0; i < s.size();) {
         const unsigned char ch = s[i];
@@ -189,8 +186,10 @@ std::string sanitize(const std::string &s) {
         if (extra == 0 || j - i != size_t(extra + 1))
             cp = 0; // stray or truncated byte
         i = j;
-        if (cp >= 0xC0 && cp <= 0xFF)
-            out += latin1[cp - 0xC0];
+        if (cp == 0x00AD)
+            continue; // soft hyphen: invisible, and the fonts have no glyph for it
+        if (cp > 0xA0 && cp <= 0xFF && cp != 0xB4)
+            out += char(cp);
         else if (cp == 0x2018 || cp == 0x2019 || cp == 0x00B4)
             out += '\'';
         else if (cp == 0x201C || cp == 0x201D)
@@ -795,15 +794,19 @@ void disc(float cx, float cy, float rx, float ry, SDL_Color inner, SDL_Color out
 void glow(float x, float y, float w, float h, SDL_Color c) { blit(glowTex, x - w / 2, y - h / 2, w, h, c); }
 
 // ---------------------------------------------------------------- text
-float measure(const std::string &s, Face face, float size, float tracking) {
+// Width of text already through sanitize(): Latin-1, one byte per glyph. It
+// must not be sanitized twice, since Latin-1 bytes are not valid UTF-8.
+float measureClean(const std::string &clean, Face face, float size, float tracking) {
     const Font &f = fonts[int(face)];
     if (f.glyphs.empty())
         return 0;
     float scale = size / f.px, width = 0;
-    const std::string clean = sanitize(s);
     for (unsigned char ch : clean)
         width += glyphFor(f, ch)->advance / 16.0f * scale + tracking;
     return clean.empty() ? 0 : width - tracking;
+}
+float measure(const std::string &s, Face face, float size, float tracking) {
+    return measureClean(sanitize(s), face, size, tracking);
 }
 void text(float x, float y, const std::string &raw, const Style &st) {
     const Font &f = fonts[int(st.face)];
@@ -811,12 +814,12 @@ void text(float x, float y, const std::string &raw, const Style &st) {
         return;
     const float scale = st.size / f.px;
     std::string s = sanitize(raw);
-    if (st.maxWidth > 0 && measure(s, st.face, st.size, st.tracking) > st.maxWidth) {
-        while (!s.empty() && measure(s + "...", st.face, st.size, st.tracking) > st.maxWidth)
+    if (st.maxWidth > 0 && measureClean(s, st.face, st.size, st.tracking) > st.maxWidth) {
+        while (!s.empty() && measureClean(s + "...", st.face, st.size, st.tracking) > st.maxWidth)
             s.pop_back();
         s += "...";
     }
-    const float width = measure(s, st.face, st.size, st.tracking);
+    const float width = measureClean(s, st.face, st.size, st.tracking);
     const float startX = st.align == Align::Center ? -width / 2 : st.align == Align::Right ? -width : 0;
     const float lineH = f.line * scale, baseline = f.ascent * scale;
     const float angle = st.angle * Tau / 360;
