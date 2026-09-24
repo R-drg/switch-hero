@@ -1588,7 +1588,6 @@ SDL_Texture *loadArtwork(const fs::path &folder) { return uploadArtwork(decodeAr
 void photo(SDL_Texture *art, float cx, float cy, float size, float angleDeg, float shade) {
     if (!art)
         return;
-    flushBatch(); // the cover is drawn directly, with its own colour mod
     const float border = std::max(6.0f, size * .05f), outer = size + border * 2;
     const float a = angleDeg * Tau / 360;
     auto corner = [&](float dx, float dy) { return rotate({cx + dx, cy + dy}, {cx, cy}, a); };
@@ -1597,11 +1596,11 @@ void photo(SDL_Texture *art, float cx, float cy, float size, float angleDeg, flo
          corner(-half + 5, half + 9), {0, 0, 0, 150});
     quad(corner(-half, -half), corner(half, -half), corner(half, half), corner(-half, half),
          {242, 242, 236, 255}, {242, 242, 236, 255}, {206, 206, 200, 255}, {214, 214, 208, 255});
+    // Through the batch like every other sprite, so it lands after its border
+    // rather than under it (a direct draw here went out before the queued
+    // border and was painted over white).
     const Uint8 v = u8(255 * shade);
-    SDL_SetTextureColorMod(art, v, v, v);
-    SDL_SetTextureAlphaMod(art, 255);
-    SDL_FRect dest{cx - size / 2, cy - size / 2, size, size};
-    SDL_RenderCopyExF(renderer, art, nullptr, &dest, angleDeg, nullptr, SDL_FLIP_NONE);
+    blitRotated(art, cx, cy, size, size, angleDeg, {v, v, v, 255});
 }
 void star(float cx, float cy, float r, float angleDeg, SDL_Color fill, SDL_Color edge) {
     auto pts = [&](float s) {
