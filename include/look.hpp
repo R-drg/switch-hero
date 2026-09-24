@@ -98,6 +98,11 @@ void gem(size_t color, GemStyle style, float x, float y, float w, Uint8 alpha, f
 // Uploads every gem texture now (waiting for the background render if needed),
 // so none is created mid-song. Call while a song or the calibration loads.
 void prepareGems();
+// Renders the gems and writes them for assets/gems.bin (a desktop tool: the
+// game loads that file instead of rendering at every launch).
+void bakeGems(const std::string &path);
+// Whether assets/gems.bin still matches the renderer; `problem` says why not.
+bool checkGems(std::string &problem);
 // `hitFlash` runs 1 to 0 just after a note is hit on this fret.
 void receptor(size_t lane, float x, float y, float w, bool pressed, bool power, float hitFlash = 0);
 void gripTape(const std::array<SDL_FPoint, 4> &corners, float v0, float v1, SDL_Color tint);

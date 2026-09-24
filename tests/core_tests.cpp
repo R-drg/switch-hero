@@ -1,5 +1,6 @@
 #include "game.hpp"
 #include "lang.hpp"
+#include "library.hpp"
 #include "scores.hpp"
 #include <fstream>
 #include <cmath>
@@ -137,6 +138,46 @@ int main(int argc, char **argv) {
         auto stems = loadSong(root / "stems");
         check(stems.audio.size() == 4, "numbered stems replace combined stems; preview excluded");
         check(scanSongs(root).size() == 8, "recursive song scan");
+        {
+            // The song list cache: unchanged folders reuse what was read before,
+            // changed ones are read again, and the file round-trips.
+            FolderFiles x, y;
+            x.add("Song.ini"), x.add("notes.chart"), y.add("NOTES.CHART"), y.add("song.ini");
+            check(folderSignature(x) == folderSignature(y), "signatures ignore order and case");
+            y.add("guitar.ogg");
+            check(folderSignature(x) != folderSignature(y), "a new file changes the signature");
+
+            auto first = fret::scanLibrary(root, {});
+            check(first.size() == 8 && first[0].signature != 0, "library scan finds every song");
+            auto known = first;
+            known[0].name = "Cached title"; // same files: the cached title must be reused as is
+            known[1].name = "Stale title", known[1].signature ^= 1; // files changed: read again
+            size_t calls = 0;
+            auto second = fret::scanLibrary(root, known, [&](size_t done, size_t total, const std::string &) {
+                calls += done <= total;
+            });
+            check(second[0].name == "Cached title" && second[1].name == first[1].name && calls == 8,
+                  "unchanged folders reuse the cache, changed ones are peeked");
+            std::atomic<bool> stop{true};
+            check(fret::scanLibrary(root, {}, {}, &stop).empty(), "a cancelled scan stops");
+
+            const fs::path cache = root / "library-test.cache";
+            auto odd = first;
+            odd[0].name = "Tab\there", odd[0].artist = "", odd[0].error = "";
+            odd[1].error = "Broken\nchart";
+            saveLibraryCache(cache, odd);
+            auto back = loadLibraryCache(cache);
+            check(back.size() == odd.size() && back[0].name == "Tab here" && back[0].artist.empty() &&
+                      back[1].error == "Broken chart" && back[2] == odd[2] && back[0].signature == odd[0].signature,
+                  "the library cache round-trips");
+            {
+                std::ofstream damaged(cache, std::ios::app);
+                damaged << "not a valid line\n";
+            }
+            check(loadLibraryCache(cache).empty() && loadLibraryCache(root / "missing.cache").empty(),
+                  "a damaged or missing cache is ignored");
+            fs::remove(cache);
+        }
         Track t;
         t.instrument = "Guitar";
         t.notes = {ns[0]};

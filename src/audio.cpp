@@ -561,6 +561,9 @@ std::vector<float> buildSfx(Sfx sound) {
 // Horizon does not time-slice threads of equal priority on one core, so a
 // mixer sharing core 0 with rendering stalls until the main thread yields.
 static void moveToSpareCore() {
+    // One step above the main thread: background work that shares this core
+    // must never delay a buffer, even if lowering its own priority did not take.
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2B);
     u64 mask = 0;
     if (R_FAILED(svcGetInfo(&mask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)))
         return;

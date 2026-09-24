@@ -12,6 +12,8 @@
 #pragma GCC diagnostic pop
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <fstream>
 #include <array>
 #include <functional>
 #include <future>
@@ -50,11 +52,30 @@ SDL_Texture *upload(Canvas c, SDL_BlendMode blend, SDL_ScaleMode scale = SDL_Sca
     }
     return t;
 }
+// Pixel functions are pure, so a big canvas is split into bands of rows,
+// painted by this thread and two helpers on the spare cores at once. The
+// start-up textures took over a second of the console's main thread in a row.
 Canvas paint(int w, int h, const std::function<SDL_Color(int, int)> &pixel) {
     Canvas c(w, h);
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x)
-            c.set(x, y, pixel(x, y));
+    auto rows = [&](int from, int to) {
+        for (int y = from; y < to; ++y)
+            for (int x = 0; x < w; ++x)
+                c.set(x, y, pixel(x, y));
+    };
+    constexpr int Bands = 3;
+    if (w * h < 16384) {
+        rows(0, h);
+        return c;
+    }
+    std::array<std::thread, Bands - 1> helpers;
+    for (int b = 1; b < Bands; ++b)
+        helpers[size_t(b - 1)] = std::thread([&, b] {
+            runInBackground();
+            rows(h * b / Bands, h * (b + 1) / Bands);
+        });
+    rows(0, h / Bands);
+    for (auto &t : helpers)
+        t.join();
     return c;
 }
 Uint8 u8(float v) { return Uint8(std::clamp(v, 0.0f, 255.0f)); }
@@ -101,16 +122,18 @@ struct Font {
 };
 std::array<Font, 3> fonts;
 
-std::vector<Uint8> readFile(const std::string &name) {
+// A file from the assets folder (the NRO's RomFS on the console), by its path
+// inside it, such as "fonts/body.font". Empty when it cannot be found.
+std::vector<Uint8> readAsset(const std::string &relative) {
     std::vector<std::string> candidates;
 #ifdef __SWITCH__
-    candidates.push_back("romfs:/fonts/" + name);
-    candidates.push_back("sdmc:/switch/switch-hero/fonts/" + name);
+    candidates.push_back("romfs:/" + relative);
+    candidates.push_back("sdmc:/switch/switch-hero/" + relative);
 #else
-    candidates.push_back("assets/fonts/" + name);
+    candidates.push_back("assets/" + relative);
     if (char *base = SDL_GetBasePath()) {
-        candidates.push_back(std::string(base) + "assets/fonts/" + name);
-        candidates.push_back(std::string(base) + "../assets/fonts/" + name);
+        candidates.push_back(std::string(base) + "assets/" + relative);
+        candidates.push_back(std::string(base) + "../assets/" + relative);
         SDL_free(base);
     }
 #endif
@@ -122,7 +145,13 @@ std::vector<Uint8> readFile(const std::string &name) {
             if (got == data.size() && !data.empty())
                 return data;
         }
-    throw std::runtime_error("Missing font asset " + name + " (expected in assets/fonts)");
+    return {};
+}
+std::vector<Uint8> readFile(const std::string &name) {
+    auto data = readAsset("fonts/" + name);
+    if (data.empty())
+        throw std::runtime_error("Missing font asset " + name + " (expected in assets/fonts)");
+    return data;
 }
 void loadFont(Font &f, const std::string &name) {
     auto data = readFile(name);
@@ -509,20 +538,144 @@ std::vector<Texel> render(bool star, bool hammer) {
         }
     return out;
 }
-// Rendered once, one style per thread; a render device reset only uploads them
-// again. start() kicks this off in the background at launch, since no menu
-// shows a gem; the first gem drawn waits for it if it is somehow not done.
-std::array<std::vector<Texel>, GemStyles> &renders() {
-    static std::array<std::vector<Texel>, GemStyles> cache;
+using Renders = std::array<std::vector<Texel>, GemStyles>;
+Renders renderAll(bool background) {
+    Renders out;
+    std::array<std::thread, GemStyles> workers;
+    for (int style = 0; style < GemStyles; ++style)
+        workers[size_t(style)] = std::thread([&out, style, background] {
+            if (background)
+                runInBackground(Work::Bulk); // off the render core, behind any chart load
+            out[size_t(style)] = render(style == GemStar || style == GemStarHopo, style == GemHopo || style == GemStarHopo);
+        });
+    for (auto &w : workers)
+        w.join();
+    return out;
+}
+
+// The renders ship pre-baked in assets/gems.bin: ray-marching them took about
+// three CPU-seconds on a desktop, over ten on the console, at every launch.
+// Bump RenderVersion whenever render() changes, and rebake with
+// `switch-hero --bake-gems assets/gems.bin`; the gems test fails until then.
+//
+// Format, little endian: "GEMS", u32 RenderVersion, u16 width, u16 height,
+// u16 styles; per style, a min and max float for each of the seven channels,
+// then runs of u32 empty-texel count, u32 filled count, and that many texels
+// of seven u16 channels, each quantized between its min and max.
+constexpr uint32_t RenderVersion = 1;
+constexpr int Channels = 7;
+float &channel(Texel &t, int c) {
+    return c == 0 ? t.cap : c < 4 ? t.rest[c - 1] : c == 4 ? t.spec : c == 5 ? t.cover : t.shadow;
+}
+bool empty(const Texel &t) {
+    Texel copy = t;
+    for (int c = 0; c < Channels; ++c)
+        if (channel(copy, c) != 0)
+            return false;
+    return true;
+}
+std::vector<Uint8> encode(const Renders &renders) {
+    std::vector<Uint8> out;
+    auto put = [&](uint64_t v, int bytes) {
+        for (int i = 0; i < bytes; ++i)
+            out.push_back(Uint8(v >> (8 * i)));
+    };
+    auto putFloat = [&](float f) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, 4);
+        put(bits, 4);
+    };
+    out.insert(out.end(), {'G', 'E', 'M', 'S'});
+    put(RenderVersion, 4), put(SpriteW, 2), put(SpriteH, 2), put(GemStyles, 2);
+    for (const auto &texels : renders) {
+        std::array<float, Channels> lo, hi;
+        lo.fill(0), hi.fill(0);
+        for (Texel t : texels)
+            for (int c = 0; c < Channels; ++c)
+                lo[size_t(c)] = std::min(lo[size_t(c)], channel(t, c)), hi[size_t(c)] = std::max(hi[size_t(c)], channel(t, c));
+        for (int c = 0; c < Channels; ++c)
+            putFloat(lo[size_t(c)]), putFloat(hi[size_t(c)]);
+        for (size_t i = 0; i < texels.size();) {
+            size_t gap = 0, run = 0;
+            while (i + gap < texels.size() && empty(texels[i + gap]))
+                ++gap;
+            while (i + gap + run < texels.size() && !empty(texels[i + gap + run]))
+                ++run;
+            put(gap, 4), put(run, 4);
+            for (size_t k = 0; k < run; ++k) {
+                Texel t = texels[i + gap + k];
+                for (int c = 0; c < Channels; ++c) {
+                    const float span = hi[size_t(c)] - lo[size_t(c)];
+                    const float q = span > 0 ? (channel(t, c) - lo[size_t(c)]) / span : 0;
+                    put(uint16_t(std::lround(std::clamp(q, 0.0f, 1.0f) * 65535)), 2);
+                }
+            }
+            i += gap + run;
+        }
+    }
+    return out;
+}
+// False when the data is missing, damaged or from another RenderVersion.
+bool decode(const std::vector<Uint8> &data, Renders &out) {
+    size_t at = 0;
+    auto get = [&](int bytes, uint64_t &v) {
+        if (at + size_t(bytes) > data.size())
+            return false;
+        v = 0;
+        for (int i = 0; i < bytes; ++i)
+            v |= uint64_t(data[at + size_t(i)]) << (8 * i);
+        at += size_t(bytes);
+        return true;
+    };
+    uint64_t version, w, h, styles;
+    if (data.size() < 4 || std::memcmp(data.data(), "GEMS", 4) != 0)
+        return false;
+    at = 4;
+    if (!get(4, version) || !get(2, w) || !get(2, h) || !get(2, styles) || version != RenderVersion ||
+        w != SpriteW || h != SpriteH || styles != GemStyles)
+        return false;
+    Renders result;
+    for (auto &texels : result) {
+        std::array<float, Channels> lo, hi;
+        for (int c = 0; c < Channels; ++c) {
+            uint64_t a, b;
+            if (!get(4, a) || !get(4, b))
+                return false;
+            const uint32_t la = uint32_t(a), lb = uint32_t(b);
+            std::memcpy(&lo[size_t(c)], &la, 4), std::memcpy(&hi[size_t(c)], &lb, 4);
+        }
+        texels.assign(size_t(SpriteW) * SpriteH, Texel{});
+        for (size_t i = 0; i < texels.size();) {
+            uint64_t gap, run;
+            if (!get(4, gap) || !get(4, run) || gap + run == 0 || i + gap + run > texels.size())
+                return false;
+            i += size_t(gap);
+            for (uint64_t k = 0; k < run; ++k, ++i)
+                for (int c = 0; c < Channels; ++c) {
+                    uint64_t q;
+                    if (!get(2, q))
+                        return false;
+                    channel(texels[i], c) = lo[size_t(c)] + (hi[size_t(c)] - lo[size_t(c)]) * float(q) / 65535;
+                }
+        }
+    }
+    if (at != data.size())
+        return false;
+    out = std::move(result);
+    return true;
+}
+
+// Loaded from the baked file; rendered here only if it is missing or stale.
+// A render device reset only uploads them again. start() kicks this off at
+// launch, and the first gem drawn waits for it if it is somehow not done.
+Renders &renders() {
+    static Renders cache;
     static std::once_flag once;
     std::call_once(once, [] {
-        std::array<std::thread, GemStyles> workers;
-        for (int style = 0; style < GemStyles; ++style)
-            workers[size_t(style)] = std::thread([style] {
-                cache[size_t(style)] = render(style == GemStar || style == GemStarHopo, style == GemHopo || style == GemStarHopo);
-            });
-        for (auto &w : workers)
-            w.join();
+        if (decode(readAsset("gems.bin"), cache))
+            return;
+        SDL_Log("Switch Hero: assets/gems.bin missing or out of date; rendering the gems (slow)");
+        cache = renderAll(true);
     });
     return cache;
 }
@@ -746,6 +899,42 @@ void blitRotated(SDL_Texture *t, float cx, float cy, float w, float h, float ang
 } // namespace
 
 // ---------------------------------------------------------------- lifetime
+void bakeGems(const std::string &path) {
+    const auto data = gem3d::encode(gem3d::renderAll(false));
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char *>(data.data()), std::streamsize(data.size()));
+    if (!out)
+        throw std::runtime_error("Cannot write " + path);
+}
+bool checkGems(std::string &problem) {
+    gem3d::Renders baked;
+    if (!gem3d::decode(readAsset("gems.bin"), baked)) {
+        problem = "assets/gems.bin is missing or from another RenderVersion";
+        return false;
+    }
+    const auto fresh = gem3d::renderAll(false);
+    for (size_t style = 0; style < fresh.size(); ++style) {
+        std::array<float, gem3d::Channels> lo{}, hi{};
+        for (auto t : fresh[style])
+            for (int c = 0; c < gem3d::Channels; ++c)
+                lo[size_t(c)] = std::min(lo[size_t(c)], gem3d::channel(t, c)),
+                hi[size_t(c)] = std::max(hi[size_t(c)], gem3d::channel(t, c));
+        for (size_t i = 0; i < fresh[style].size(); ++i) {
+            auto a = fresh[style][i], b = baked[style][i];
+            for (int c = 0; c < gem3d::Channels; ++c) {
+                // Within a few quantization steps: the file is 16-bit, and
+                // another compiler may round the last float bit differently.
+                const float step = (hi[size_t(c)] - lo[size_t(c)]) / 65535;
+                if (std::abs(gem3d::channel(a, c) - gem3d::channel(b, c)) > step * 4 + 1e-6f) {
+                    problem = "assets/gems.bin no longer matches the gem renderer; rebake it with "
+                              "switch-hero --bake-gems assets/gems.bin";
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
 void init(SDL_Renderer *r) {
     renderer = r;
     // A missing font must never take the game down: it draws without text.
@@ -978,11 +1167,12 @@ void burnedCd(float cx, float cy, float r, double time) {
     disc(cx, cy, r * .085f, r * .085f, {8, 8, 10, 255}, {16, 16, 20, 255}, 32);
 }
 Image decodeArtwork(const fs::path &folder) {
-    // Clone Hero folders keep cover art next to the chart under a handful of names.
+    // Clone Hero folders keep cover art next to the chart under a handful of
+    // names. One listing answers all of them; a stat per name is slow on the SD card.
+    const auto files = FolderFiles::list(folder);
     for (const char *name : {"album.png", "album.jpg", "album.jpeg", "cover.png", "cover.jpg", "cover.jpeg"}) {
-        std::error_code ec;
-        const fs::path file = folder / name;
-        if (!fs::is_regular_file(file, ec))
+        const fs::path file = files.find(name);
+        if (file.empty())
             continue;
         SDL_RWops *rw = SDL_RWFromFile(file.string().c_str(), "rb");
         if (!rw)

@@ -6,6 +6,7 @@
 #include "game.hpp"
 #include "guitar_input.hpp"
 #include "lang.hpp"
+#include "library.hpp"
 #include "look.hpp"
 #include "scores.hpp"
 #include <SDL.h>
@@ -247,6 +248,10 @@ class Controller {
                                  HidNpadButton_Plus | HidNpadButton_Minus | HidNpadButton_Up | HidNpadButton_Down |
                                  HidNpadButton_Left | HidNpadButton_Right | HidNpadButton_StickL | HidNpadButton_StickR;
         // Off the main thread's core; the audio mixer prefers core 2, so try 1 first.
+        // One step above the main thread, so background work sharing the core
+        // (chart loads, scans) can never keep it from sampling the buttons,
+        // even if lowering that work's own priority did not take.
+        svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2B);
         u64 cores = 0;
         if (R_SUCCEEDED(svcGetInfo(&cores, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)))
             for (int core : {1, 2})
@@ -417,10 +422,7 @@ class Controller {
         return out;
     }
 };
-struct Entry {
-    fs::path folder;
-    std::string name, artist, error;
-};
+using Entry = LibraryEntry;
 // A song read off the SD card away from the main thread: the parsed chart and
 // the decoded cover, ready to install if the cursor is still on it.
 struct Loaded {
@@ -960,11 +962,13 @@ int main(int argc, char **argv) {
         if (R_FAILED(romfsInit()))
             std::cerr << "Switch Hero: RomFS unavailable; falling back to sdmc fonts\n";
         const std::string home = "sdmc:/switch/switch-hero";
-        fs::path root = home + "/songs", config = home + "/settings.cfg", scoresPath = home + "/scores.cfg";
+        fs::path root = home + "/songs", config = home + "/settings.cfg", scoresPath = home + "/scores.cfg",
+                 libraryPath = home + "/library.cache";
 #else
-        fs::path root = "songs", config = "settings.cfg", scoresPath = "scores.cfg";
+        fs::path root = "songs", config = "settings.cfg", scoresPath = "scores.cfg", libraryPath = "library.cache";
 #endif
-        bool inspect = false, smoke = false, smokeGuitar = false, timing = false;
+        bool inspect = false, smoke = false, smokeGuitar = false, timing = false, checkGemsOnly = false;
+        std::string bakeGemsTo;
         std::string shot = "switch-hero.bmp";
         for (int i = 1; i < argc; ++i) {
             std::string a = argv[i];
@@ -980,11 +984,31 @@ int main(int argc, char **argv) {
                 shot = argv[++i];
             else if (a == "--songs" && i + 1 < argc)
                 root = argv[++i];
+            else if (a == "--bake-gems" && i + 1 < argc)
+                bakeGemsTo = argv[++i];
+            else if (a == "--check-gems")
+                checkGemsOnly = true;
             else if (a == "--help") {
-                std::cout << "switch-hero [--songs FOLDER] [--inspect] [--smoke | --smoke-wii-guitar] [--timing] [--screenshot FILE.bmp]\n";
+                std::cout << "switch-hero [--songs FOLDER] [--inspect] [--smoke | --smoke-wii-guitar] [--timing] [--screenshot FILE.bmp]\n"
+                             "            [--bake-gems FILE] [--check-gems]\n";
                 return 0;
             } else
                 throw std::runtime_error("Unknown argument: " + a);
+        }
+        // Gem sprites ship pre-rendered in assets/gems.bin (see look.cpp).
+        if (!bakeGemsTo.empty()) {
+            look::bakeGems(bakeGemsTo);
+            std::cout << "Baked gems into " << bakeGemsTo << '\n';
+            return 0;
+        }
+        if (checkGemsOnly) {
+            std::string problem;
+            if (!look::checkGems(problem)) {
+                std::cerr << problem << '\n';
+                return 1;
+            }
+            std::cout << "assets/gems.bin matches the renderer\n";
+            return 0;
         }
         std::vector<Entry> entries;
         if (inspect) {
@@ -1040,27 +1064,83 @@ int main(int argc, char **argv) {
         lang::set(settings.language >= 0 ? lang::Language(settings.language) : systemLanguage());
         // A big library takes a while to walk, so show progress instead of a
         // black screen. Metadata only: charts are parsed when a song is picked.
-        auto scanLibrary = [&]() {
-            entries.clear();
-            loadingScreen("looking for songs", -1, 0, now());
-            auto folders = scanSongs(root);
-            entries.reserve(folders.size());
-            uint64_t lastFrame = 0;
-            for (size_t i = 0; i < folders.size(); ++i) {
-                Entry e;
-                e.folder = folders[i];
-                auto brief = peekSong(folders[i]);
-                e.name = brief.name, e.artist = brief.artist, e.error = brief.error;
-                entries.push_back(e);
-                const uint64_t ticks = SDL_GetTicks64();
-                if (ticks - lastFrame >= 33 || i + 1 == folders.size()) {
-                    lastFrame = ticks;
-                    SDL_PumpEvents();
-                    loadingScreen(plainTitle(e.name), float(i + 1) / folders.size(), int(i + 1), now());
-                }
+        // The song list is cached on the card (see library.hpp). The smoke
+        // tests neither read nor write it.
+        auto saveLibrary = [&]() {
+            if (smoke)
+                return;
+            try {
+                saveLibraryCache(libraryPath, entries);
+            } catch (const std::exception &e) {
+                SDL_Log("Switch Hero: %s", e.what());
             }
         };
-        scanLibrary();
+        // Bumped whenever the list changes under the player (a scan, a
+        // deletion), so a background check that started before it is stale.
+        int libraryVersion = 0;
+        // Walks the card while this thread shows the progress: the walk runs on
+        // a spare core, and drawing never holds it up. Folders unchanged since
+        // `known` reuse their title instead of opening song.ini again.
+        auto scanLibrary = [&](const std::vector<Entry> &known) {
+            struct Progress {
+                std::mutex mutex;
+                std::string latest;
+                size_t done = 0, total = 0;
+            } progress;
+            auto walk = std::async(std::launch::async, [&] {
+                runInBackground();
+                return fret::scanLibrary(root, known, [&](size_t done, size_t total, const std::string &title) {
+                    std::lock_guard<std::mutex> lock(progress.mutex);
+                    progress.done = done, progress.total = total, progress.latest = title;
+                });
+            });
+            auto draw = [&] {
+                // Copied out first: the walk must never wait while a frame presents.
+                std::string latest;
+                size_t done, total;
+                {
+                    std::lock_guard<std::mutex> lock(progress.mutex);
+                    latest = progress.latest, done = progress.done, total = progress.total;
+                }
+                if (!total)
+                    loadingScreen(tr("looking for songs"), -1, 0, now());
+                else
+                    loadingScreen(plainTitle(latest), float(done) / float(total), int(done), now());
+            };
+            do {
+                SDL_PumpEvents();
+                draw();
+            } while (walk.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready);
+            entries = walk.get(); // rethrows anything the walk threw
+            draw(); // the full bar, once
+            ++libraryVersion;
+            saveLibrary();
+        };
+        // Start from the cached list when there is one, and check the card
+        // behind the menus; only a first start (or a lost cache) waits on a scan.
+        std::vector<Entry> cached = smoke ? std::vector<Entry>{} : loadLibraryCache(libraryPath);
+        {
+            // A cache written for another songs folder (--songs) does not apply.
+            const std::string base = root.lexically_normal().string();
+            cached.erase(std::remove_if(cached.begin(), cached.end(),
+                                        [&](const Entry &e) {
+                                            return e.folder.lexically_normal().string().rfind(base, 0) != 0;
+                                        }),
+                         cached.end());
+        }
+        std::atomic<bool> stopRefresh{false};
+        std::future<std::vector<Entry>> refresh;
+        int refreshVersion = 0;
+        if (cached.empty())
+            scanLibrary({});
+        else {
+            entries = cached;
+            refreshVersion = libraryVersion;
+            refresh = std::async(std::launch::async, [&root, cached, &stopRefresh] {
+                runInBackground();
+                return fret::scanLibrary(root, cached, {}, &stopRefresh);
+            });
+        }
         Scores scores;
         scores.load(scoresPath);
         // How the last finished run compared with the stored best.
@@ -1679,6 +1759,8 @@ int main(int argc, char **argv) {
                         if (settings.lastSong == name)
                             settings.lastSong.clear();
                         entries.erase(entries.begin() + std::ptrdiff_t(selected));
+                        ++libraryVersion;
+                        saveLibrary();
                         selected = entries.empty() ? 0 : std::min(selected, entries.size() - 1);
                         ownedAt = -1; // the download list rechecks what is in the library
                         loadSelected();
@@ -1896,7 +1978,7 @@ int main(int argc, char **argv) {
                             retire(downloadArt);
                             artUrl.clear();
                             if (downloads.downloads != downloadsSeen) {
-                                scanLibrary();
+                                scanLibrary(entries);
                                 sortEntries();
                                 for (size_t i = 0; i < entries.size(); ++i)
                                     if (entries[i].folder.filename() == downloads.lastFolder)
@@ -2264,6 +2346,40 @@ int main(int argc, char **argv) {
                         message = e.what();
                     }
                     audio.playSfx(Sfx::Select);
+                }
+            }
+            // The background check of the card: when it finds the cached list out
+            // of date, swap in the fresh one, keeping the cursor on its song.
+            if (refresh.valid() && refresh.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                std::vector<Entry> fresh;
+                try {
+                    fresh = refresh.get();
+                } catch (const std::exception &e) {
+                    SDL_Log("Switch Hero: %s", e.what());
+                    fresh = entries;
+                }
+                auto byFolder = [](std::vector<Entry> v) {
+                    std::sort(v.begin(), v.end(), [](const Entry &a, const Entry &b) { return a.folder < b.folder; });
+                    return v;
+                };
+                // A scan or deletion since it started makes it stale; the next start checks again.
+                if (refreshVersion == libraryVersion && byFolder(fresh) != byFolder(entries)) {
+                    const fs::path keep = selected < entries.size() ? entries[selected].folder : fs::path();
+                    entries = std::move(fresh);
+                    bool kept = false;
+                    for (size_t i = 0; i < entries.size(); ++i)
+                        if (entries[i].folder == keep)
+                            selected = i, kept = true;
+                    if (!kept)
+                        selected = entries.empty() ? 0 : std::min(selected, entries.size() - 1);
+                    sortEntries(); // the kept song stays selected
+                    ++libraryVersion;
+                    ownedAt = -1; // the download list rechecks what is in the library
+                    // The song under the cursor went away: load whatever is there now,
+                    // unless a song is already chosen and being set up or played.
+                    if (!kept && (screen == Screen::Main || screen == Screen::Library))
+                        selectEntry();
+                    saveLibrary();
                 }
             }
             // Background chart loads: start one once the cursor rests, install it
@@ -3385,6 +3501,9 @@ int main(int argc, char **argv) {
         }
         // Shut down in the reverse order things were created: the console fatals
         // if the process returns with the audio or graphics devices still open.
+        stopRefresh = true; // a background card check stops at the next folder
+        if (refresh.valid())
+            refresh.wait();
         audio.stop();
         if (!smoke)
             try {

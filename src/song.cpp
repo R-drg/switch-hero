@@ -102,10 +102,24 @@ static double decimal(const std::string &s) {
         throw std::runtime_error("Invalid number: " + s);
     return n;
 }
-static fs::path findFile(const fs::path &folder, const std::string &name) {
-    for (const auto &e : fs::directory_iterator(folder))
-        if (e.is_regular_file() && lower(e.path().filename().string()) == lower(name))
-            return e.path();
+FolderFiles FolderFiles::list(const fs::path &folder) {
+    FolderFiles files;
+    files.folder = folder;
+    std::error_code ec;
+    for (fs::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec))
+        if (it->is_regular_file(ec)) // the listing carries the type; no extra stat
+            files.add(it->path().filename().string());
+    return files;
+}
+void FolderFiles::add(std::string name) {
+    lowered.push_back(lower(name));
+    names.push_back(std::move(name));
+}
+fs::path FolderFiles::find(const std::string &name) const {
+    const std::string want = lower(name);
+    for (size_t i = 0; i < lowered.size(); ++i)
+        if (lowered[i] == want)
+            return folder / names[i];
     return {};
 }
 static void warn(Song &s, const std::string &w) {
@@ -137,8 +151,8 @@ static RawTrack &rawTrack(std::map<std::string, RawTrack> &ts, const std::string
     }
     return it->second;
 }
-static void ini(Song &s) {
-    auto p = findFile(s.folder, "song.ini");
+static void ini(Song &s, const FolderFiles &files) {
+    auto p = files.find("song.ini");
     if (p.empty())
         return;
     std::istringstream f(readText(p));
@@ -551,7 +565,7 @@ static void finish(Song &s, std::map<std::string, RawTrack> &raw) {
         (s.metadata.at("modchart") == "1" || lower(s.metadata.at("modchart")) == "true"))
         warn(s, "Modchart scripts are not executed");
 }
-static void audioFiles(Song &s) {
+static void audioFiles(Song &s, const FolderFiles &files) {
     const std::vector<std::string> exts = {".opus", ".ogg", ".mp3", ".flac", ".wav"};
     const std::vector<std::pair<std::string, std::string>> stems = {
         {"song", "musicstream"},    {"guitar", "guitarstream"}, {"rhythm", "rhythmstream"},
@@ -562,7 +576,7 @@ static void audioFiles(Song &s) {
         {"vocals_explicit_2", ""},  {"crowd", "crowdstream"}};
     auto locate = [&](const std::string &name) {
         for (const auto &ext : exts) {
-            auto p = findFile(s.folder, name + ext);
+            auto p = files.find(name + ext);
             if (!p.empty())
                 return p;
         }
@@ -579,6 +593,7 @@ static void audioFiles(Song &s) {
             (stem == "drums_1" && !numberedDrums))
             continue;
         auto p = locate(stem);
+        const bool listed = !p.empty();
         if (p.empty() && !tag.empty() && s.metadata.count(tag)) {
             auto name = s.metadata.at(tag);
             std::replace(name.begin(), name.end(), '\\', '/');
@@ -588,14 +603,16 @@ static void audioFiles(Song &s) {
                     throw std::runtime_error("Audio reference must stay inside song folder");
                 p = s.folder / rel;
                 if (!fs::is_regular_file(p))
-                    p = findFile(s.folder, rel.filename().string());
+                    p = files.find(rel.filename().string());
             }
         }
         // libstdc++'s canonicalization rejects libnx device paths such as
         // "sdmc:/switch/...". All candidates are already constrained to the
         // song folder above, so lexical normalization is sufficient for stem
         // deduplication and does not require a host filesystem interpretation.
-        if (!p.empty() && fs::is_regular_file(p) && seen.insert(p.lexically_normal()).second)
+        // Found in the listing means it is a file already; only a path taken
+        // from song.ini still needs checking.
+        if (!p.empty() && (listed || fs::is_regular_file(p)) && seen.insert(p.lexically_normal()).second)
             s.audio.push_back(p);
     }
     if (s.audio.empty())
@@ -606,34 +623,38 @@ Song loadSong(const fs::path &folder) {
         throw std::runtime_error("Song folder does not exist: " + folder.string());
     Song s;
     s.folder = folder;
+    const auto files = FolderFiles::list(folder);
     std::map<std::string, RawTrack> raw;
-    s.chart = findFile(folder, "notes.mid");
+    s.chart = files.find("notes.mid");
     if (!s.chart.empty()) {
         s.midi = true;
-        ini(s);
+        ini(s, files);
         parseMidi(s, raw);
     } else {
-        s.chart = findFile(folder, "notes.chart");
+        s.chart = files.find("notes.chart");
         if (s.chart.empty())
             throw std::runtime_error("Expected notes.chart or notes.mid");
         parseChart(s, raw);
-        ini(s);
+        ini(s, files);
     }
     finish(s, raw);
-    audioFiles(s);
+    audioFiles(s, files);
     return s;
 }
-SongBrief peekSong(const fs::path &folder) {
+SongBrief peekSong(const fs::path &folder) { return peekSong(FolderFiles::list(folder)); }
+SongBrief peekSong(const FolderFiles &files) {
+    const fs::path &folder = files.folder;
     SongBrief brief;
     brief.name = folder.filename().string();
     Song probe;
     probe.folder = folder;
-    const bool midi = !findFile(folder, "notes.mid").empty();
-    if (!midi && findFile(folder, "notes.chart").empty()) {
+    const bool midi = !files.find("notes.mid").empty();
+    const fs::path chart = midi ? fs::path() : files.find("notes.chart");
+    if (!midi && chart.empty()) {
         brief.error = "Expected notes.chart or notes.mid";
         return brief;
     }
-    ini(probe); // song.ini carries the display metadata for nearly every song
+    ini(probe, files); // song.ini carries the display metadata for nearly every song
     auto meta = [&](const char *k) {
         auto it = probe.metadata.find(k);
         return it == probe.metadata.end() ? std::string() : trim(it->second);
@@ -642,7 +663,7 @@ SongBrief peekSong(const fs::path &folder) {
     brief.artist = meta("artist");
     if (!midi && (meta("name").empty() || brief.artist.empty())) {
         // No usable ini: read just the chart's [Song] block, not its notes.
-        std::ifstream f(folder / findFile(folder, "notes.chart").filename());
+        std::ifstream f(chart);
         std::string line, section;
         while (std::getline(f, line)) {
             line = trim(line);
@@ -664,27 +685,37 @@ SongBrief peekSong(const fs::path &folder) {
     }
     return brief;
 }
-std::vector<fs::path> scanSongs(const fs::path &root) {
-    std::set<fs::path> dirs;
-    if (!fs::is_directory(root))
-        return {};
-    if (!findFile(root, "notes.chart").empty() || !findFile(root, "notes.mid").empty())
-        dirs.insert(root);
+std::vector<FolderFiles> findSongs(const fs::path &root) {
     std::error_code ec;
+    if (!fs::is_directory(root, ec))
+        return {};
+    // One walk lists every folder once, and each folder's files are kept, so
+    // reading a song's title afterwards needs no second listing.
+    std::map<fs::path, FolderFiles> folders;
     fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
     while (it != end) {
         if (it.depth() > 16)
             it.disable_recursion_pending();
         if (it->is_regular_file(ec)) {
-            auto n = lower(it->path().filename().string());
-            if (n == "notes.chart" || n == "notes.mid")
-                dirs.insert(it->path().parent_path());
+            auto &f = folders[it->path().parent_path()];
+            f.folder = it->path().parent_path();
+            f.add(it->path().filename().string());
         }
         it.increment(ec);
         if (ec)
             ec.clear();
     }
-    return {dirs.begin(), dirs.end()};
+    std::vector<FolderFiles> songs;
+    for (auto &[path, files] : folders)
+        if (!files.find("notes.chart").empty() || !files.find("notes.mid").empty())
+            songs.push_back(std::move(files));
+    return songs;
+}
+std::vector<fs::path> scanSongs(const fs::path &root) {
+    std::vector<fs::path> out;
+    for (auto &f : findSongs(root))
+        out.push_back(std::move(f.folder));
+    return out;
 }
 void deleteSong(const fs::path &root, const fs::path &folder) {
     // Compared component by component on normalised paths. No canonical():

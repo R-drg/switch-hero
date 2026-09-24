@@ -56,7 +56,22 @@ Song loadSong(const fs::path &folder);
 struct SongBrief {
     std::string name, artist, error;
 };
+// The regular files directly inside a folder, from one directory listing.
+// Listing a folder on the console's SD card costs milliseconds, and a song
+// used to be listed over a hundred times while its stems were looked for, so
+// a folder is listed once and every lookup after that is in memory.
+struct FolderFiles {
+    fs::path folder;
+    std::vector<std::string> names, lowered;
+    static FolderFiles list(const fs::path &folder); // empty if it cannot be read
+    // Case-insensitive, as Clone Hero is. Empty when there is no such file.
+    fs::path find(const std::string &name) const;
+    void add(std::string name);
+};
+SongBrief peekSong(const FolderFiles &files);
 SongBrief peekSong(const fs::path &folder);
+// Every song folder under root, with its files, from a single walk.
+std::vector<FolderFiles> findSongs(const fs::path &root);
 std::vector<fs::path> scanSongs(const fs::path &root);
 // Deletes one song folder and everything in it. Refuses anything that is not
 // strictly inside `root`, the library itself included, so a bad path can never
