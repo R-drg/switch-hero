@@ -992,17 +992,39 @@ Image decodeArtwork(const fs::path &folder) {
         SDL_RWclose(rw);
         if (got != data.size() || data.empty())
             continue;
-        int w = 0, h = 0, channels = 0;
-        Uint8 *pixels = stbi_load_from_memory(data.data(), int(data.size()), &w, &h, &channels, 4);
-        if (!pixels)
-            continue;
-        Image image;
-        image.w = w, image.h = h;
-        image.rgba.assign(pixels, pixels + size_t(w) * size_t(h) * 4);
-        stbi_image_free(pixels);
-        return image;
+        Image image = decodeImage(std::string(data.begin(), data.end()));
+        if (!image.rgba.empty())
+            return image;
     }
     return {};
+}
+Image decodeImage(const std::string &bytes) {
+    if (bytes.empty() || bytes.size() > (16u << 20))
+        return {};
+    int w = 0, h = 0, channels = 0;
+    Uint8 *pixels = stbi_load_from_memory(reinterpret_cast<const Uint8 *>(bytes.data()), int(bytes.size()), &w, &h,
+                                          &channels, 4);
+    if (!pixels)
+        return {};
+    // Covers are drawn at a few hundred pixels at most; a 3000 px scan would
+    // only cost upload time and texture memory. Box-filter it down.
+    const int factor = std::max(1, (std::max(w, h) + 511) / 512);
+    Image image;
+    image.w = w / factor, image.h = h / factor;
+    image.rgba.resize(size_t(image.w) * size_t(image.h) * 4);
+    for (int y = 0; y < image.h; ++y)
+        for (int x = 0; x < image.w; ++x)
+            for (int c = 0; c < 4; ++c) {
+                unsigned sum = 0;
+                for (int dy = 0; dy < factor; ++dy)
+                    for (int dx = 0; dx < factor; ++dx)
+                        sum += pixels[(size_t(y * factor + dy) * size_t(w) + size_t(x * factor + dx)) * 4 + size_t(c)];
+                image.rgba[(size_t(y) * size_t(image.w) + size_t(x)) * 4 + size_t(c)] = Uint8(sum / unsigned(factor * factor));
+            }
+    stbi_image_free(pixels);
+    if (image.w <= 0 || image.h <= 0)
+        return {};
+    return image;
 }
 SDL_Texture *uploadArtwork(const Image &image) {
     if (image.rgba.empty())

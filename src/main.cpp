@@ -1257,6 +1257,14 @@ int main(int argc, char **argv) {
         bool typing = false; // desktop only; the Switch uses the system keyboard
         size_t downloadRow = 0;
         int downloadsSeen = 0;
+        // Cover of the highlighted chart: requested once the cursor rests on it,
+        // decoded off the main thread, then uploaded here.
+        std::string artUrl;
+        double artUrlAt = 0;
+        bool artRequested = false, artSettled = false;
+        SDL_Texture *downloadArt = nullptr;
+        std::future<look::Image> artDecoding;
+        std::vector<std::future<look::Image>> staleArt;
         std::vector<bool> owned; // which results are already in the library
         size_t ownedFor = 0;
         int ownedAt = -1;
@@ -1783,6 +1791,43 @@ int main(int argc, char **argv) {
                 }
                 const size_t count = downloads.results.size();
                 downloadRow = count ? std::min(downloadRow, count - 1) : 0;
+                {
+                    const std::string url = count ? enchor::albumArtUrl(downloads.results[downloadRow]) : std::string();
+                    if (url != artUrl) {
+                        retire(downloadArt);
+                        if (artDecoding.valid())
+                            staleArt.push_back(std::move(artDecoding));
+                        artUrl = url, artUrlAt = now();
+                        artRequested = false, artSettled = url.empty();
+                    }
+                    // Wait for the cursor to rest, so scrolling past covers never fetches them.
+                    if (!artRequested && !artUrl.empty() && now() - artUrlAt > .25) {
+                        downloader->wantArt(artUrl);
+                        artRequested = true;
+                    }
+                    if (artRequested && !artSettled && !artDecoding.valid())
+                        if (auto bytes = downloader->art(artUrl)) {
+                            if (bytes->empty())
+                                artSettled = true; // no cover; the panel shows a disc instead
+                            else
+                                artDecoding = std::async(std::launch::async,
+                                                         [bytes] {
+                                                             runInBackground();
+                                                             return look::decodeImage(*bytes);
+                                                         });
+                        }
+                    if (artDecoding.valid() &&
+                        artDecoding.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                        downloadArt = look::uploadArtwork(artDecoding.get());
+                        artSettled = true;
+                    }
+                    staleArt.erase(std::remove_if(staleArt.begin(), staleArt.end(),
+                                                  [](auto &f) {
+                                                      return f.wait_for(std::chrono::seconds(0)) ==
+                                                             std::future_status::ready;
+                                                  }),
+                                   staleArt.end());
+                }
                 if (typing) {
                     if (key(SDL_SCANCODE_RETURN) || key(SDL_SCANCODE_KP_ENTER)) {
                         typing = false;
@@ -1818,6 +1863,8 @@ int main(int argc, char **argv) {
                         else {
                             // Pick up what was downloaded, and land on the newest one.
                             screen = downloadReturn;
+                            retire(downloadArt);
+                            artUrl.clear();
                             if (downloads.downloads != downloadsSeen) {
                                 scanLibrary();
                                 sortEntries();
@@ -2744,43 +2791,130 @@ int main(int argc, char **argv) {
                     field.maxWidth = 1100;
                     text(84, 172, shown, field);
                 }
-                plate(60, 226, 1160, 380);
+                // The results on the left; everything known about the highlighted
+                // chart on the right, so it can be judged before it is fetched.
+                plate(60, 226, 644, 380);
                 const auto &results = downloads.results;
                 const int rows = 6;
                 const int first =
                     std::clamp(int(downloadRow) - rows / 2, 0, std::max(0, int(results.size()) - rows));
+                // Intensity: six pips, as Clone Hero rates a part. -1 is unrated.
+                auto pips = [](float x, float y, int intensity, float r, float step) {
+                    for (int p = 0; p < 6; ++p) {
+                        const bool lit = p < intensity;
+                        disc(x + p * step, y, r, r, lit ? SDL_Color{255, 198, 44, 255} : SDL_Color{70, 72, 84, 255},
+                             lit ? SDL_Color{150, 90, 10, 255} : SDL_Color{38, 40, 48, 255}, 12);
+                    }
+                    if (intensity < 0)
+                        text(x + 6 * step - 2, y - 11, "?", body(16, ink::faint));
+                };
                 for (int i = 0; i < rows && first + i < int(results.size()); ++i) {
                     const auto &c = results[size_t(first + i)];
                     const bool on = size_t(first + i) == downloadRow;
                     const bool have = size_t(first + i) < owned.size() && owned[size_t(first + i)];
                     const float y = 246 + i * 58;
                     if (on) {
-                        rect(80, y - 6, 1120, 54, {0, 0, 0, 120});
+                        rect(80, y - 6, 604, 54, {0, 0, 0, 120});
                         glow(98, y + 20, 34, 34, alpha(ink::acid, .8f));
                     }
                     disc(98, y + 20, 6, 6, on ? ink::acid : SDL_Color{44, 46, 54, 255},
                          on ? mix(ink::acid, SDL_Color{0, 0, 0, 255}, .45f) : SDL_Color{26, 26, 32, 255});
                     auto name = body(22, have ? ink::dim : on ? ink::white : SDL_Color{200, 204, 214, 255});
-                    name.maxWidth = 760;
+                    name.maxWidth = 420;
                     text(122, y, c.name, name);
                     auto by = body(15, ink::dim);
-                    by.maxWidth = 760;
-                    text(122, y + 26, c.artist + (c.charter.empty() ? "" : "   charted by " + c.charter), by);
-                    // Intensity: six pips, as Clone Hero rates guitar parts.
-                    for (int p = 0; p < 6; ++p) {
-                        const bool lit = p < c.guitarDifficulty;
-                        disc(930 + p * 16, y + 14, 5, 5, lit ? SDL_Color{255, 198, 44, 255} : SDL_Color{70, 72, 84, 255},
-                             lit ? SDL_Color{150, 90, 10, 255} : SDL_Color{38, 40, 48, 255}, 12);
-                    }
-                    if (c.guitarDifficulty < 0)
-                        text(1022, y + 3, "?", body(16, ink::faint));
-                    auto right = body(16, ink::dim);
-                    right.align = Align::Right;
-                    text(1180, y + 4, c.seconds > 0 ? timeText(c.seconds) : "", right);
+                    by.maxWidth = 420;
+                    text(122, y + 26, c.artist, by);
+                    pips(566, y + 14, c.guitarDifficulty, 4.5f, 13);
                     if (have) {
                         auto tag = marker(18, ink::acid, -2);
                         tag.align = Align::Right;
-                        text(1180, y + 26, "in library", tag);
+                        text(684, y + 22, tr("in library"), tag);
+                    }
+                }
+                plate(720, 226, 500, 380);
+                if (downloadRow < results.size()) {
+                    const auto &c = results[downloadRow];
+                    // Cover, or a blank disc while it loads or when there is none.
+                    if (downloadArt)
+                        photo(downloadArt, 800, 312, 118, -4);
+                    else
+                        burnedCd(800, 312, 60, ui);
+                    const float tx = 878, tw = 322;
+                    auto title = marker(26, {232, 234, 240, 255}, -1.5f);
+                    title.maxWidth = tw;
+                    text(tx, 244, c.name, title);
+                    auto artist = body(18, ink::white);
+                    artist.maxWidth = tw;
+                    text(tx, 284, c.artist, artist);
+                    auto small = body(15, ink::dim);
+                    small.maxWidth = tw;
+                    std::string album = c.album;
+                    if (!c.year.empty())
+                        album += album.empty() ? c.year : " (" + c.year + ")";
+                    text(tx, 310, album, small);
+                    std::string about = c.genre;
+                    if (c.seconds > 0)
+                        about += (about.empty() ? "" : "  /  ") + timeText(c.seconds);
+                    text(tx, 330, about, small);
+                    if (!c.charter.empty())
+                        text(tx, 350, tr("charted by {}", c.charter), small);
+
+                    // Parts: name, intensity, then notes per difficulty (a dash
+                    // where the part has no chart for it).
+                    const float colX[4] = {1026, 1074, 1122, 1170};
+                    const char *const *letters = difficultyLetters();
+                    rect(740, 382, 460, 1, {0, 0, 0, 150});
+                    rect(740, 383, 460, 1, {176, 180, 192, 42});
+                    text(744, 392, tr("part"), body(13, ink::faint));
+                    text(896, 392, tr("intensity"), body(13, ink::faint));
+                    for (int d = 0; d < 4; ++d) {
+                        disc(colX[d], 400, 10, 10, {255, 196, 40, 255}, {160, 96, 10, 255}, 16);
+                        auto l = body(12, ink::marker);
+                        l.align = Align::Center;
+                        text(colX[d], 393, letters[d], l);
+                    }
+                    const float rowH = c.parts.size() > 4 ? 28 : 32;
+                    float py = 420;
+                    for (const auto &part : c.parts) {
+                        auto label = stencil(19);
+                        label.maxWidth = 146;
+                        text(744, py, tr(part.instrument), label);
+                        pips(902, py + 11, part.intensity, 5, 13);
+                        for (int d = 0; d < 4; ++d) {
+                            auto n = body(14, part.charted(d) ? ink::white : ink::faint);
+                            n.align = Align::Center;
+                            text(colX[d], py + 3, part.charted(d) ? std::to_string(part.notes[size_t(d)]) : "-", n);
+                        }
+                        py += rowH;
+                    }
+                    if (c.parts.empty())
+                        text(744, py, tr("no part details"), body(15, ink::faint));
+
+                    // What the chart asks of the player, and what else it carries.
+                    std::vector<std::string> features;
+                    for (const auto &part : c.parts)
+                        if (part.instrument == "Guitar" && part.peakNps[3] > 0)
+                            features.push_back(tr("peak {} notes/s", int(std::lround(part.peakNps[3]))));
+                    if (c.solos)
+                        features.push_back(tr("solos"));
+                    if (c.openNotes)
+                        features.push_back(tr("open notes"));
+                    if (c.tapNotes)
+                        features.push_back(tr("tap notes"));
+                    std::string featureLine;
+                    for (const auto &f : features)
+                        featureLine += (featureLine.empty() ? "" : "   ") + f;
+                    auto featureStyle = body(15, ink::acid);
+                    featureStyle.maxWidth = 460;
+                    text(744, 546, featureLine, featureStyle);
+                    if (!c.otherParts.empty()) {
+                        std::string others;
+                        for (const auto &o : c.otherParts)
+                            others += (others.empty() ? "" : ", ") + tr(o);
+                        auto otherStyle = body(14, ink::faint);
+                        otherStyle.maxWidth = 460;
+                        text(744, 568, tr("also has {} (not playable)", others), otherStyle);
                     }
                 }
                 if (results.empty() && downloads.state == Downloader::State::Idle && downloads.error.empty()) {

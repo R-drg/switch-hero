@@ -97,6 +97,40 @@ int main() {
         check(page.charts[1].guitarDifficulty == -1, "missing rating reads as unknown");
         check(downloadUrl(page.charts[0]) == "https://files.enchor.us/0123456789abcdef0123456789abcdef_novideo.sng",
               "video charts download without the video");
+        {
+            // Parts, difficulties and features, as the index's notesData lists them.
+            const auto detail = parseSearch(R"({"found":1,"data":[
+                {"name":"Full","md5":"00112233445566778899aabbccddeeff","albumArtMd5":"ffeeddccbbaa99887766554433221100",
+                 "year":"2010","genre":"Rock","diff_guitar":5,"diff_bass":2,"diff_drums":3,"diff_keys":-1,
+                 "diff_guitar_coop":-1,"diff_rhythm":4,
+                 "notesData":{"instruments":["guitar","bass","drums","rhythm"],"hasSoloSections":true,
+                   "hasOpenNotes":true,"hasTapNotes":false,"hasVocals":true,
+                   "noteCounts":[{"instrument":"guitar","difficulty":"expert","count":900},
+                                 {"instrument":"guitar","difficulty":"easy","count":200},
+                                 {"instrument":"bass","difficulty":"hard","count":300},
+                                 {"instrument":"drums","difficulty":"expert","count":1000},
+                                 {"instrument":"guitar","difficulty":"bogus","count":5}],
+                   "maxNps":[{"instrument":"guitar","difficulty":"expert","nps":14.5}]}},
+                {"name":"Bare","md5":"fedcba9876543210fedcba9876543210","albumArtMd5":"nope"},
+                {"name":"Old","md5":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","diff_guitar":3,"diff_bass":-1}]})");
+            const auto &full = detail.charts[0];
+            check(full.parts.size() == 2 && full.parts[0].instrument == "Guitar" && full.parts[1].instrument == "Bass",
+                  "parts come from the note counts, in song setup order");
+            check(full.parts[0].intensity == 5 && full.parts[0].notes[3] == 900 && full.parts[0].notes[0] == 200 &&
+                      !full.parts[0].charted(1) && full.parts[0].peakNps[3] == 14.5f,
+                  "per-difficulty note counts and peaks");
+            check(full.otherParts == std::vector<std::string>{"Drums", "Vocals"}, "drums and vocals are noted");
+            check(full.solos && full.openNotes && !full.tapNotes, "feature flags");
+            check(full.year == "2010" && full.genre == "Rock" &&
+                      albumArtUrl(full) == "https://files.enchor.us/ffeeddccbbaa99887766554433221100.jpg",
+                  "year, genre and cover art");
+            const auto &bare = detail.charts[1];
+            check(bare.parts.empty() && bare.otherParts.empty() && albumArtUrl(bare).empty(),
+                  "missing notesData and a bad art hash are harmless");
+            const auto &old = detail.charts[2];
+            check(old.parts.size() == 1 && old.parts[0].intensity == 3 && !old.parts[0].charted(3),
+                  "entries without note counts fall back to ratings");
+        }
         rejects([] { parseSearch("<html>"); }, "non-JSON is rejected");
         try {
             parseSearch(R"({"error":"Bad Request","statusCode":400})");

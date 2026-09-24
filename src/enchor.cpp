@@ -36,6 +36,65 @@ double number(const json &o, const char *key, double fallback) {
     auto it = o.find(key);
     return it != o.end() && it->is_number() ? it->get<double>() : fallback;
 }
+bool flag(const json &o, const char *key) {
+    auto it = o.find(key);
+    return it != o.end() && it->is_boolean() && it->get<bool>();
+}
+bool isMd5(const std::string &s) {
+    return s.size() == 32 && std::all_of(s.begin(), s.end(), [](char ch) { return std::isxdigit((unsigned char)ch); });
+}
+int difficultyIndex(const std::string &d) {
+    return d == "easy" ? 0 : d == "medium" ? 1 : d == "hard" ? 2 : d == "expert" ? 3 : -1;
+}
+// The index's five-fret instruments, their rating keys and the game's names
+// for them, in the game's part order.
+struct Instrument {
+    const char *api, *rating, *name;
+};
+const Instrument fiveFret[] = {{"guitar", "diff_guitar", "Guitar"},
+                               {"bass", "diff_bass", "Bass"},
+                               {"rhythm", "diff_rhythm", "Rhythm"},
+                               {"guitarcoop", "diff_guitar_coop", "Co-op"},
+                               {"keys", "diff_keys", "Keys"}};
+// Fills the parts and feature flags from "notesData".
+void readNotes(const json &c, Chart &chart) {
+    auto it = c.find("notesData");
+    const json empty = json::object();
+    const json &notes = it != c.end() && it->is_object() ? *it : empty;
+    auto list = [&](const char *key) -> const json & {
+        static const json none = json::array();
+        auto l = notes.find(key);
+        return l != notes.end() && l->is_array() ? *l : none;
+    };
+    for (const auto &inst : fiveFret) {
+        Part part;
+        part.instrument = inst.name;
+        part.intensity = int(number(c, inst.rating, -1));
+        for (const auto &n : list("noteCounts"))
+            if (n.is_object() && text(n, "instrument") == inst.api)
+                if (const int d = difficultyIndex(text(n, "difficulty")); d >= 0)
+                    part.notes[size_t(d)] = std::max(0, int(number(n, "count", 0)));
+        for (const auto &n : list("maxNps"))
+            if (n.is_object() && text(n, "instrument") == inst.api)
+                if (const int d = difficultyIndex(text(n, "difficulty")); d >= 0)
+                    part.peakNps[size_t(d)] = float(std::max(0.0, number(n, "nps", 0)));
+        const bool anyNotes = std::any_of(part.notes.begin(), part.notes.end(), [](int n) { return n > 0; });
+        // The note counts decide which parts exist; some charts rate parts
+        // they never chart. Only entries without counts fall back to ratings.
+        if (anyNotes || (list("noteCounts").empty() && part.intensity >= 0))
+            chart.parts.push_back(std::move(part));
+    }
+    bool drums = number(c, "diff_drums", -1) >= 0;
+    for (const auto &i : list("instruments"))
+        drums = drums || (i.is_string() && i.get<std::string>() == "drums");
+    if (drums)
+        chart.otherParts.push_back("Drums");
+    if (flag(notes, "hasVocals") || number(c, "diff_vocals", -1) >= 0)
+        chart.otherParts.push_back("Vocals");
+    chart.solos = flag(notes, "hasSoloSections");
+    chart.openNotes = flag(notes, "hasOpenNotes");
+    chart.tapNotes = flag(notes, "hasTapNotes");
+}
 } // namespace
 
 Page parseSearch(const std::string &body) {
@@ -55,17 +114,21 @@ Page parseSearch(const std::string &body) {
         Chart chart;
         chart.md5 = text(c, "md5");
         // An md5 is 32 hex digits; anything else would be a bad file URL.
-        if (chart.md5.size() != 32 ||
-            !std::all_of(chart.md5.begin(), chart.md5.end(), [](char ch) { return std::isxdigit((unsigned char)ch); }))
+        if (!isMd5(chart.md5))
             continue;
         chart.name = plainText(text(c, "name"));
         chart.artist = plainText(text(c, "artist"));
         chart.album = plainText(text(c, "album"));
         chart.charter = plainText(text(c, "charter"));
+        chart.genre = plainText(text(c, "genre"));
+        chart.year = plainText(text(c, "year"));
+        if (const auto art = text(c, "albumArtMd5"); isMd5(art))
+            chart.albumArtMd5 = art;
         chart.guitarDifficulty = int(number(c, "diff_guitar", -1));
         chart.seconds = number(c, "song_length", 0) / 1000;
         auto video = c.find("hasVideoBackground");
         chart.video = video != c.end() && video->is_boolean() && video->get<bool>();
+        readNotes(c, chart);
         page.charts.push_back(std::move(chart));
     }
     return page;
@@ -73,6 +136,10 @@ Page parseSearch(const std::string &body) {
 
 std::string downloadUrl(const Chart &chart) {
     return "https://files.enchor.us/" + chart.md5 + (chart.video ? "_novideo" : "") + ".sng";
+}
+
+std::string albumArtUrl(const Chart &chart) {
+    return chart.albumArtMd5.empty() ? std::string() : "https://files.enchor.us/" + chart.albumArtMd5 + ".jpg";
 }
 
 std::string plainText(const std::string &s) {

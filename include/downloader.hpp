@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fret {
@@ -42,7 +43,18 @@ class Downloader {
     View view() const;
     bool inLibrary(const enchor::Chart &chart) const;
 
+    // Cover art, fetched on its own thread so it never waits behind a
+    // download. Only the latest request is fetched; older ones still waiting
+    // are dropped, so scrolling fast does not queue up every cover passed.
+    void wantArt(const std::string &url);
+    // The image file for `url`: null until it arrives, empty if it failed.
+    std::shared_ptr<const std::string> art(const std::string &url) const;
+
   private:
+    struct Network;
+    // Sockets and curl, started by whichever thread needs them first.
+    void startNetwork();
+    void runArt();
     struct Job {
         enum class Kind { None, Search, Download } kind = Kind::None;
         std::string query;
@@ -59,6 +71,12 @@ class Downloader {
     Job pending;
     View state;
     std::atomic<bool> stopping{false}, cancelled{false};
-    std::thread worker;
+    std::mutex networkMutex;
+    std::unique_ptr<Network> network;
+    // Covers by URL, newest last; a few dozen at most.
+    std::string artWanted;
+    std::vector<std::pair<std::string, std::shared_ptr<const std::string>>> artCache;
+    std::condition_variable artWake;
+    std::thread worker, artWorker;
 };
 } // namespace fret

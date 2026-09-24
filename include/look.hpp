@@ -74,6 +74,8 @@ struct Image {
     std::vector<Uint8> rgba;
 };
 Image decodeArtwork(const fs::path &folder);
+// A JPEG or PNG in memory, scaled down to at most 512 px a side. Empty on failure.
+Image decodeImage(const std::string &bytes);
 SDL_Texture *uploadArtwork(const Image &image); // null for an empty image
 SDL_Texture *loadArtwork(const fs::path &folder);
 void photo(SDL_Texture *art, float cx, float cy, float size, float angleDeg, float shade = 1);

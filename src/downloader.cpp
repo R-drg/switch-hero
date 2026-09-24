@@ -17,9 +17,13 @@ constexpr int perPage = 25;
 #endif
 const char *const userAgent = "switch-hero/" SWITCH_HERO_VERSION " (homebrew rhythm game)";
 
+constexpr size_t artCacheSize = 32;
+constexpr size_t artMaxBytes = 4u << 20;
+} // namespace
+
 // Sockets are only brought up once the download screen is first opened, so
 // players who never use it pay nothing for them.
-struct Network {
+struct Downloader::Network {
     Network() {
 #ifdef __SWITCH__
         if (R_FAILED(socketInitializeDefault()))
@@ -40,6 +44,7 @@ struct Network {
     }
 };
 
+namespace {
 struct Handle {
     CURL *curl = curl_easy_init();
     curl_slist *headers = nullptr;
@@ -85,7 +90,10 @@ size_t toFile(char *data, size_t size, size_t count, void *out) {
 }
 } // namespace
 
-Downloader::Downloader(std::filesystem::path root) : library(std::move(root)) { worker = std::thread([this] { run(); }); }
+Downloader::Downloader(std::filesystem::path root) : library(std::move(root)) {
+    worker = std::thread([this] { run(); });
+    artWorker = std::thread([this] { runArt(); });
+}
 Downloader::~Downloader() {
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -93,7 +101,70 @@ Downloader::~Downloader() {
         cancelled = true;
     }
     wake.notify_all();
+    artWake.notify_all();
     worker.join();
+    artWorker.join();
+}
+void Downloader::startNetwork() {
+    std::lock_guard<std::mutex> lock(networkMutex);
+    if (!network)
+        network = std::make_unique<Network>();
+}
+
+void Downloader::wantArt(const std::string &url) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (url.empty())
+        return;
+    for (const auto &entry : artCache)
+        if (entry.first == url)
+            return;
+    artWanted = url;
+    artWake.notify_all();
+}
+std::shared_ptr<const std::string> Downloader::art(const std::string &url) const {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const auto &entry : artCache)
+        if (entry.first == url)
+            return entry.second;
+    return nullptr;
+}
+void Downloader::runArt() {
+    runInBackground();
+    while (true) {
+        std::string url;
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            artWake.wait(lock, [&] { return stopping || !artWanted.empty(); });
+            if (stopping)
+                return;
+            url = std::move(artWanted);
+            artWanted.clear();
+        }
+        std::string bytes;
+        try {
+            startNetwork();
+            Handle h;
+            curl_easy_setopt(h.curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(h.curl, CURLOPT_TIMEOUT, 20L);
+            curl_easy_setopt(h.curl, CURLOPT_WRITEFUNCTION, toString);
+            curl_easy_setopt(h.curl, CURLOPT_WRITEDATA, &bytes);
+            // Abort covers that are unreasonably large, and quit on shutdown.
+            curl_easy_setopt(h.curl, CURLOPT_NOPROGRESS, 0L);
+            curl_easy_setopt(h.curl, CURLOPT_XFERINFODATA, this);
+            curl_easy_setopt(
+                h.curl, CURLOPT_XFERINFOFUNCTION,
+                +[](void *data, curl_off_t, curl_off_t now, curl_off_t, curl_off_t) -> int {
+                    return static_cast<Downloader *>(data)->stopping || now > curl_off_t(artMaxBytes) ? 1 : 0;
+                });
+            h.perform();
+        } catch (const std::exception &) {
+            bytes.clear(); // no cover is shown; the chart details still are
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        artCache.emplace_back(url, std::make_shared<const std::string>(std::move(bytes)));
+        if (artCache.size() > artCacheSize)
+            artCache.erase(artCache.begin());
+    }
 }
 
 void Downloader::search(const std::string &query) {
@@ -133,7 +204,6 @@ bool Downloader::inLibrary(const enchor::Chart &chart) const {
 
 void Downloader::run() {
     runInBackground(); // parsing results and unpacking charts is real work
-    std::unique_ptr<Network> network;
     while (true) {
         Job job;
         {
@@ -148,8 +218,7 @@ void Downloader::run() {
             state.progress = 0, state.megabytes = 0;
         }
         try {
-            if (!network)
-                network = std::make_unique<Network>();
+            startNetwork();
             if (job.kind == Job::Kind::Search)
                 runSearch(job);
             else
