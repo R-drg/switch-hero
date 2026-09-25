@@ -25,8 +25,6 @@ const std::pair<const char *, const char *> portugueseTable[] = {
     {"QUIT", "SAIR"},
     {"pick a song from your library", "escolha uma música da sua biblioteca"},
     {"grab charts from chorus encore", "baixe charts do chorus encore"},
-    {"Downloads need the Switch or desktop version - use Add songs below the game",
-     "Downloads precisam da versão Switch ou desktop - use o botão Add songs abaixo do jogo"},
     {"controls, calibration and gameplay", "controles, calibração e jogabilidade"},
     {"back to the homebrew menu", "voltar ao menu homebrew"},
     {"CHOOSE YOUR LANGUAGE", "ESCOLHA O IDIOMA"},

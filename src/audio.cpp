@@ -7,22 +7,15 @@
 #include <fstream>
 #include <stdexcept>
 
-// The console and the browser have no libsndfile, so they decode each format
-// with its own library (and WAV by hand).
-#if defined(__SWITCH__) || defined(__EMSCRIPTEN__)
-#define FRET_OWN_DECODERS 1
-#endif
-#ifndef FRET_OWN_DECODERS
+#ifndef __SWITCH__
 #include <sndfile.h>
 #else
 #include <cstdlib>
+#include <malloc.h>
 #include <mpg123.h>
 #include <opus/opusfile.h>
-#include <vorbis/vorbisfile.h>
-#endif
-#ifdef __SWITCH__
-#include <malloc.h>
 #include <switch.h>
+#include <vorbis/vorbisfile.h>
 #endif
 
 namespace fret {
@@ -35,7 +28,7 @@ void Decoder::seek(double seconds) {
         left -= n;
     }
 }
-#ifndef FRET_OWN_DECODERS
+#ifndef __SWITCH__
 class FileDecoder : public Decoder {
     SNDFILE *file = nullptr;
 
@@ -312,7 +305,7 @@ class WavDecoder : public Decoder {
                 f.seekg(n + (n & 1), std::ios::cur);
         }
         if ((type != 1 || bits != 16) && !(type == 3 && bits == 32))
-            throw std::runtime_error("WAV must be PCM16 or float32");
+            throw std::runtime_error("Switch WAV supports PCM16 or float32");
         if (channels < 1 || channels > 2 || rate <= 0)
             throw std::runtime_error("Invalid WAV channels/rate");
         duration = double(remaining) / (rate * channels * (bits / 8));
@@ -359,7 +352,7 @@ std::unique_ptr<Decoder> openDecoder(const fs::path &p) {
         return std::make_unique<Mp3Decoder>(p);
     if (ext == ".wav")
         return std::make_unique<WavDecoder>(p);
-    throw std::runtime_error("Audio format unsupported: " + ext + "; convert FLAC to OGG first");
+    throw std::runtime_error("Switch audio format unsupported: " + ext + "; convert FLAC to OGG first");
 }
 #endif
 

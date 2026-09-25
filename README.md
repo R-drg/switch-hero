@@ -51,30 +51,6 @@ Coming from the prototype when it was called Fretboard? Move your songs and
 `settings.cfg` from `sd:/switch/fretboard/` to `sd:/switch/switch-hero/`, then
 delete the old folder so the Homebrew Menu only lists Switch Hero.
 
-## Play in a browser
-
-The same game also builds for the web with Emscripten (see
-[Browser](#browser) under Building). Open the page, click **Click to play**,
-and play with the keyboard ([Controls](#controls), desktop column) or any
-gamepad the browser can see. The demo song is included.
-
-- **Adding songs.** Use **Add songs** below the game and pick a song folder, or
-  a folder of song folders. The files are copied into the browser's storage
-  (IndexedDB) and join the song list a moment later. Songs, settings and high
-  scores stay in that browser until its site data is cleared. Delete songs
-  from the song list as usual.
-- **Keep the library modest.** Every stored song is loaded into memory when
-  the page opens, so a few hundred MB is comfortable; many GB is not.
-- **No in-game downloads.** The Download screen says so and points at Add
-  songs: the browser build has no curl, and Chorus Encore isn't set up to
-  answer requests from other websites.
-- **Audio:** WAV, OGG Vorbis, Opus and MP3, as on the Switch. No FLAC.
-- **No Wii guitar.** Multiplayer is open (each gamepad is a seat), but it
-  hasn't been played in a browser yet.
-- A browser needs a click before it plays sound, hence the start button. It
-  has been tested in Chromium; the page needs threads, which browsers only
-  allow on pages served with cross-origin isolation (see below).
-
 ## Features
 
 - **Smooth, steady scrolling.** The song clock runs on the real-time timer and
@@ -600,37 +576,6 @@ docker run --rm -v "$PWD:/work" -w /work devkitpro/devkita64:latest \
 The output is `build-switch/switch-hero.nro`. Copy it over
 `release/switch-hero/switch-hero.nro` to refresh the release.
 
-### Browser
-
-Install the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
-(tested with 6.0.10) and activate it (`source ./emsdk_env.sh`), then:
-
-```bash
-bash tools/build-web.sh
-python3 tools/serve-web.py            # http://localhost:8000/switch-hero.html
-```
-
-The first build downloads Emscripten's SDL2, Ogg, Vorbis and mpg123 ports and
-the Opus and opusfile sources. The output in `build-web/` is a static site:
-`switch-hero.html`, `.js`, `.wasm`, `.data` (fonts, gems and the demo song),
-`coi-sw.js` and `fonts/`.
-
-The game's threads need `SharedArrayBuffer`, which browsers only enable on a
-cross-origin-isolated page. `tools/serve-web.py` sends the two headers
-(`Cross-Origin-Opener-Policy: same-origin`,
-`Cross-Origin-Embedder-Policy: require-corp`). On a host that can't send them,
-such as GitHub Pages, `coi-sw.js` adds them from a service worker and the page
-reloads itself once on the first visit. `.github/workflows/web.yml` builds the
-site and publishes it to GitHub Pages on every push to `main`, once Pages is
-set to deploy from GitHub Actions in the repository settings.
-
-How the port works: the game keeps its own main loop, and ASYNCIFY lets
-`web::endFrame()` hand each frame back to the browser. Threads come from a
-pre-made pool of 16 web workers, because the main thread can't create a worker
-while it waits on a thread. `/save` is IndexedDB, mounted and loaded before
-`main` runs and saved every few seconds. The page drives audio unlock, song
-import and saving (`web/shell.html`).
-
 First hardware check:
 1. Boot the game and play the demo song with both triggers.
 2. Pause, resume and finish the song.
@@ -681,10 +626,6 @@ the software works together, not physical sound or output latency.
   jewel gem sprites the game loads at start-up. Rerun it after changing the gem
   renderer; the `gems` test checks the file still matches.
 - `tools/build-switch.sh`: devkitPro CMake/NRO build.
-- `include/web.hpp`, `src/web.cpp`, `src/downloader_web.cpp`, `web/`: the
-  browser build's frame hand-off, page shell and service worker.
-- `tools/build-web.sh`, `tools/serve-web.py`: Emscripten build and a local
-  server with the headers the page needs.
 - `tests/`: fixtures and parser, gameplay, audio, timing and download tests.
 - `release/`: the ready-to-copy Switch build and install instructions.
 

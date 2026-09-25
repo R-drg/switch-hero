@@ -1,21 +1,4 @@
 # Changelog
-## Unreleased
-
-### Play in a browser
-- A web build made with Emscripten (`tools/build-web.sh`): the same game,
-  menus and look, playable with a keyboard or gamepads in Chrome, Edge or
-  Firefox. `.github/workflows/web.yml` publishes it to GitHub Pages.
-- **Add songs** on the page copies song folders into the browser's storage;
-  they join the song list without a restart. Songs, settings and scores
-  persist per browser.
-- WAV, OGG Vorbis, Opus and MP3 stems all play. Opus and opusfile are built
-  from source, since Emscripten has no port for them.
-- The Download screen isn't available in the browser and says to use Add
-  songs instead.
-- Tested in headless Chromium with software WebGL: menus, song import, all four
-  codecs, persistence across reloads, and quitting. Not yet played with a
-  gamepad or checked for audio sync on real hardware.
-
 ## 0.3
 
 The 0.3 release adds split-screen multiplayer, practice mode, solos, a

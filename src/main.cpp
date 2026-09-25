@@ -10,7 +10,6 @@
 #include "look.hpp"
 #include "platform.hpp"
 #include "scores.hpp"
-#include "web.hpp"
 #include <SDL.h>
 #include <algorithm>
 #include <array>
@@ -1095,7 +1094,6 @@ void loadingScreen(const std::string &label, float progress, int count, double u
     }
     grade(ui); // flushes
     SDL_RenderPresent(renderer);
-    web::endFrame();
 }
 void screenshot(const std::string &path) {
     look::flush();
@@ -1328,20 +1326,6 @@ int main(int argc, char **argv) {
         const std::string home = "sdmc:/switch/switch-hero";
         fs::path root = home + "/songs", config = home + "/settings.cfg", scoresPath = home + "/scores.cfg",
                  libraryPath = home + "/library.cache";
-#elif defined(__EMSCRIPTEN__)
-        // The page mounts IndexedDB at /save and loads it before main runs, so
-        // settings, scores and imported songs outlive the tab.
-        const std::string home = "/save";
-        fs::path root = home + "/songs", config = home + "/settings.cfg", scoresPath = home + "/scores.cfg",
-                 libraryPath = home + "/library.cache";
-        // The demo ships read-only in the page's data package; it is copied into
-        // the library on the first visit, so deleting it later sticks.
-        if (const fs::path demo = "/demo", marker = home + "/.demo-installed"; !fs::exists(marker)) {
-            std::error_code ec;
-            fs::create_directories(root, ec);
-            fs::copy(demo, root, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
-            std::ofstream{marker};
-        }
 #else
         fs::path root = "songs", config = "settings.cfg", scoresPath = "scores.cfg", libraryPath = "library.cache";
 #endif
@@ -1839,7 +1823,7 @@ int main(int argc, char **argv) {
         std::string query;
         bool typing = false; // desktop only; the Switch uses the system keyboard
         size_t downloadRow = 0;
-        int downloadsSeen = 0, songsAddedSeen = web::songsAdded();
+        int downloadsSeen = 0;
         // Cover of the highlighted chart: requested once the cursor rests on it,
         // decoded off the main thread, then uploaded here.
         std::string artUrl;
@@ -2315,7 +2299,7 @@ int main(int argc, char **argv) {
                     message.clear();
                     screen = Screen::Download;
                 } catch (const std::exception &e) {
-                    message = tr(e.what());
+                    message = e.what();
                 }
             };
             auto openOptions = [&]() {
@@ -3342,16 +3326,6 @@ int main(int argc, char **argv) {
                     }
                     audio.playSfx(Sfx::Select);
                 }
-            }
-            // Song folders added through the web page: check the library again
-            // behind the menus, as for a finished download.
-            if (!refresh.valid() && web::songsAdded() != songsAddedSeen) {
-                songsAddedSeen = web::songsAdded();
-                refreshVersion = libraryVersion;
-                refresh = std::async(std::launch::async, [&root, known = entries, &stopRefresh] {
-                    runInBackground();
-                    return fret::scanLibrary(root, known, {}, &stopRefresh);
-                });
             }
             // Downloads finishing while the player is elsewhere: check the card
             // again behind the menus, so the new songs join the list.
@@ -4960,10 +4934,6 @@ int main(int argc, char **argv) {
             for (int i = 0; i < SDL_NUM_SCANCODES; ++i)
                 previousKeys[i] = keys[i];
             if (smoke) SDL_Delay(16);
-            // Last, after the key snapshot above: the browser delivers input
-            // while the frame is handed back, so a key pressed then must still
-            // read as new on the next frame.
-            web::endFrame();
         }
         // Shut down in the reverse order things were created: the console fatals
         // if the process returns with the audio or graphics devices still open.
@@ -4995,7 +4965,6 @@ int main(int argc, char **argv) {
 #ifdef __SWITCH__
         romfsExit();
 #endif
-        web::closed();
         return 0;
     } catch (const std::exception &e) {
         std::cerr << "Switch Hero: " << e.what() << '\n';
