@@ -58,6 +58,10 @@ The same game also builds for the web with Emscripten (see
 and play with the keyboard ([Controls](#controls), desktop column) or any
 gamepad the browser can see. The demo song is included.
 
+- **On-screen prompts follow what you last pressed.** Keyboard keys show as
+  keycaps (`ENTER`, `ESC`, `TAB`, A S D F G under the highway). A gamepad shows
+  its buttons (A, B, X, Y, LB, RT, START). Gamepads use the Xbox/PlayStation
+  layout: the bottom button confirms and the right one backs out.
 - **Adding songs.** Use **Add songs** below the game and pick a song folder, or
   a folder of song folders. The files are copied into the browser's storage
   (IndexedDB) and join the song list a moment later. Songs, settings and high

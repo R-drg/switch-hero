@@ -219,6 +219,17 @@ std::string bindingName(int n) {
         return "ZL";
     if (n == 33)
         return "ZR";
+#elif defined(__EMSCRIPTEN__)
+    // Named as on the pad in hand. The browser's standard layout confirms with
+    // the bottom face button, so Controller::read swaps it with the right one
+    // and these names follow the swap (see there).
+    static const std::pair<int, const char *> names[] = {
+        {0, "B"},     {1, "A"},      {2, "X"},      {3, "Y"},    {4, "SELECT"}, {6, "START"}, {7, "LS"},
+        {8, "RS"},    {9, "LB"},     {10, "RB"},    {11, "UP"},  {12, "DOWN"},  {13, "LEFT"}, {14, "RIGHT"},
+        {32, "LT"},   {33, "RT"}};
+    for (auto [b, name] : names)
+        if (n == b)
+            return name;
 #else
     if (n == 0)
         return "SOUTH";
@@ -238,6 +249,50 @@ std::string bindingName(int n) {
         return "RT";
 #endif
     return "BTN " + std::to_string(n);
+}
+// Which buttons the on-screen prompts name. The console always names its own;
+// elsewhere they follow whatever the player touched last, the keyboard or a
+// gamepad, so nobody is told to press a button they are not holding.
+enum class Prompts { Switch, Keyboard, Gamepad };
+#ifdef __SWITCH__
+Prompts prompts = Prompts::Switch;
+#else
+Prompts prompts = Prompts::Keyboard;
+#endif
+// The controller button `n` (a bit as Controller::read reports it) as a prompt
+// glyph, or `key` when the keyboard is in use. Keys are drawn as keycaps.
+std::string glyph(int n, const char *key) {
+    if (prompts == Prompts::Keyboard)
+        return std::string("[") + key;
+#ifndef __EMSCRIPTEN__
+    // The console's names; the desktop build keeps the Switch layout too.
+    if (n == 4)
+        return "-";
+    if (n == 6)
+        return "+";
+    static const std::pair<int, const char *> names[] = {{0, "B"}, {1, "A"}, {2, "Y"}, {3, "X"},
+                                                         {9, "L"}, {10, "R"}, {32, "ZL"}, {33, "ZR"}};
+    for (auto [b, name] : names)
+        if (n == b)
+            return name;
+    return bindingName(n);
+#else
+    const std::string name = bindingName(n);
+    return name.size() > 2 ? "[" + name : name;
+#endif
+}
+// The same button as a word inside a sentence ("Plus pause", "Esc cancels").
+std::string buttonWord(int n, const char *key) {
+    if (prompts == Prompts::Keyboard)
+        return key;
+#ifndef __EMSCRIPTEN__
+    if (n == 4)
+        return lang::tr("Minus");
+    if (n == 6)
+        return lang::tr("Plus");
+#endif
+    const std::string g = glyph(n, key);
+    return g[0] == '[' ? g.substr(1) : g;
 }
 class Controller {
   public:
@@ -568,6 +623,14 @@ class Controller {
             if (SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000)
                 out |= bit(33);
         }
+#ifdef __EMSCRIPTEN__
+        // Pads in a browser are laid out like an Xbox or PlayStation pad, where
+        // the bottom button confirms and the right one backs out: the reverse
+        // of the Switch, which the rest of the game follows (bit 1 accepts,
+        // bit 0 backs out). Swapping them here keeps every screen as it is.
+        const uint64_t south = out & bit(0), east = out & bit(1);
+        out = (out & ~(bit(0) | bit(1))) | (south ? bit(1) : 0) | (east ? bit(0) : 0);
+#endif
 #endif
         return out;
     }
@@ -1058,7 +1121,12 @@ void highway(const Song &song, const Session &session, const Settings &settings,
         const float luma = .3f * lc.r + .59f * lc.g + .11f * lc.b;
         auto label = body(16, alpha(luma < 110 ? mix(lc, {255, 255, 255, 255}, .55f) : lc, .85f));
         label.align = Align::Center;
-        text(xx(l + .5f, bottom), edge + 2, bindingName(settings.wiiGuitar ? wiiGuitarBindings[l] : settings.bindings[l]),
+        // The keyboard's frets are fixed: A S D F G.
+        static const char *const fretKeys[] = {"A", "S", "D", "F", "G"};
+        text(xx(l + .5f, bottom), edge + 2,
+             prompts == Prompts::Keyboard && !settings.wiiGuitar
+                 ? std::string(fretKeys[l])
+                 : bindingName(settings.wiiGuitar ? wiiGuitarBindings[l] : settings.bindings[l]),
              label);
     }
     // Fire sits above the fret buttons; sustain flames first so bursts flare over them.
@@ -1145,16 +1213,32 @@ const char *const *difficultyLetters() {
 // Guitar frets as hint glyphs ("#0" green to "#4" orange). They draw as a
 // fret-coloured button rather than a word, which is how a guitar player reads them.
 std::string fretGlyph(int lane) { return "#" + std::to_string(lane); }
+// Keyboard keys ("[ENTER") draw as a keycap as wide as the key's name.
+bool isKeycap(const std::string &glyph) { return glyph.size() > 1 && glyph[0] == '['; }
+float keycapWidth(const std::string &glyph) { return std::max(28.0f, measure(glyph.substr(1), Face::Body, 12) + 14); }
+// How much room a glyph takes before its label.
+float glyphWidth(const std::string &glyph) { return isKeycap(glyph) ? keycapWidth(glyph) + 8 : 34; }
 void hintButton(float x, float y, const std::string &glyph, const std::string &label) {
     if (glyph.size() == 2 && glyph[0] == '#')
         fretButton(x, y, size_t(glyph[1] - '0'), label);
-    else
+    else if (isKeycap(glyph)) {
+        const float w = keycapWidth(glyph);
+        rect(x + 1, y + 2, w, 26, {0, 0, 0, 160});
+        rect(x, y, w, 26, {210, 212, 222, 255});
+        rect(x + 2, y + 2, w - 4, 21, {30, 30, 36, 255});
+        auto g = body(12);
+        g.align = Align::Center;
+        text(x + w / 2, y + 6, glyph.substr(1), g);
+        if (!label.empty())
+            text(x + w + 8, y + 3, label, body(17, ink::dim));
+    } else
         button(x, y, glyph, label);
 }
 // The glyphs for the menu actions in the current controller mode.
-std::string acceptGlyph(bool guitar) { return guitar ? fretGlyph(0) : "A"; }
-std::string backGlyph(bool guitar) { return guitar ? fretGlyph(1) : "B"; }
-std::string altGlyph(bool guitar) { return guitar ? fretGlyph(2) : "Y"; }
+std::string acceptGlyph(bool guitar) { return guitar ? fretGlyph(0) : glyph(1, "ENTER"); }
+std::string backGlyph(bool guitar) { return guitar ? fretGlyph(1) : glyph(0, "ESC"); }
+// The secondary action's keyboard key differs by screen.
+std::string altGlyph(bool guitar, const char *key = "TAB") { return guitar ? fretGlyph(2) : glyph(2, key); }
 // A saved best as a compact line: stars, score and a full combo tag.
 void bestLine(float x, float y, const Record &r, SDL_Color ink, float size = 15) {
     for (int i = 0; i < 5; ++i)
@@ -1169,7 +1253,7 @@ void bestLine(float x, float y, const Record &r, SDL_Color ink, float size = 15)
 void hints(const std::vector<std::pair<std::string, std::string>> &items, float x = 58, float y = 676) {
     for (const auto &[glyph, label] : items) {
         hintButton(x, y, glyph, label);
-        x += 34 + measure(label, Face::Body, 17) + 36;
+        x += glyphWidth(glyph) + measure(label, Face::Body, 17) + 36;
     }
 }
 // A vertical menu. The selected item is written in Sharpie on a strip of
@@ -2150,6 +2234,10 @@ int main(int argc, char **argv) {
             if (screen != Screen::Playing)
                 throw std::runtime_error(message);
         }
+#ifndef __SWITCH__
+        if (controller.connected())
+            prompts = Prompts::Gamepad;
+#endif
         while (running) {
 #ifdef __SWITCH__
             if (!appletMainLoop())
@@ -2166,6 +2254,13 @@ int main(int argc, char **argv) {
                       event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT));
                 if (pressEvent && (!pressStamped || SDL_TICKS_PASSED(pressedAt, event.common.timestamp)))
                     pressedAt = event.common.timestamp, pressStamped = true;
+#ifndef __SWITCH__
+                if (event.type == SDL_KEYDOWN)
+                    prompts = Prompts::Keyboard;
+                else if (event.type == SDL_CONTROLLERBUTTONDOWN ||
+                         (event.type == SDL_CONTROLLERAXISMOTION && std::abs(event.caxis.value) > 16000))
+                    prompts = Prompts::Gamepad;
+#endif
                 if (typing && event.type == SDL_TEXTINPUT && query.size() < 100)
                     query += event.text.text;
                 if (typing && event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_BACKSPACE)
@@ -3309,7 +3404,7 @@ int main(int argc, char **argv) {
                 // B is the orange fret. Presses aimed at the song must not land on
                 // this menu and throw the results away, so it waits a moment.
             } else if (screen == Screen::Results) {
-                if (secondary && !resultSections.empty()) {
+                if ((secondary || key(SDL_SCANCODE_TAB)) && !resultSections.empty()) {
                     showSections = !showSections;
                     audio.playSfx(Sfx::Toggle);
                 }
@@ -3713,7 +3808,7 @@ int main(int argc, char **argv) {
                     text(600, 640, message, marker(22, messageInk(), -1));
                 hints({{glyphAccept, tr(askingPart ? "SELECT" : "PLAY")},
                        {glyphBack, tr("BACK")},
-                       {settings.wiiGuitar ? fretGlyph(3) : "X", tr(settings.noFail ? "NO FAIL: ON" : "NO FAIL: OFF")}});
+                       {settings.wiiGuitar ? fretGlyph(3) : glyph(3, "N"), tr(settings.noFail ? "NO FAIL: ON" : "NO FAIL: OFF")}});
                 auto mode = body(16, ink::dim);
                 mode.align = Align::Right;
                 text(1222, 680, tr(settings.wiiGuitar ? "wii guitar mode" : settings.gamepad ? "press-to-hit mode" : "strum mode"),
@@ -3743,14 +3838,21 @@ int main(int argc, char **argv) {
                     text(640, 285, tr("NO SONGS FOUND"), [] { auto s = stencil(52); s.align = Align::Center; return s; }());
                     auto line1 = body(20, ink::dim);
                     line1.align = Align::Center;
-                    text(640, 360, tr("Copy extracted Clone Hero song folders into"), line1);
                     auto path = marker(24, ink::acid, -1);
                     path.align = Align::Center;
+#ifdef __EMSCRIPTEN__
+                    // The library lives in the browser's storage; the page fills it.
+                    text(640, 360, tr("Pick extracted Clone Hero song folders with"), line1);
+                    text(640, 395, tr("Add songs, below the game"), path);
+                    text(640, 440, tr("Each folder needs notes.chart or notes.mid plus audio"), line1);
+#else
+                    text(640, 360, tr("Copy extracted Clone Hero song folders into"), line1);
                     text(640, 395, root.string(), path);
                     text(640, 440, tr("Each folder needs notes.chart or notes.mid plus audio"), line1);
                     auto line2 = body(20, ink::white);
                     line2.align = Align::Center;
-                    text(640, 468, tr("or press + to download charts"), line2);
+                    text(640, 468, tr("or press {} to download charts", buttonWord(6, "O")), line2);
+#endif
                 } else {
                     const int rows = 6;
                     int first = std::clamp(int(selected) - rows / 2, 0, std::max(0, int(entries.size()) - rows));
@@ -3887,9 +3989,9 @@ int main(int argc, char **argv) {
                     hints({{glyphAccept, tr("SELECT SONG")},
                            {glyphBack, tr("BACK")},
                            {glyphAlt, tr("OPTIONS")},
-                           {"+", tr("DOWNLOAD")},
-                           {settings.wiiGuitar ? fretGlyph(3) : "X", tr("DELETE")},
-                           {settings.wiiGuitar ? fretGlyph(4) : "ZR", tr("SORT")}});
+                           {glyph(6, "O"), tr("DOWNLOAD")},
+                           {settings.wiiGuitar ? fretGlyph(3) : glyph(3, "DEL"), tr("DELETE")},
+                           {settings.wiiGuitar ? fretGlyph(4) : glyph(33, "Z"), tr("SORT")}});
             } else if (screen == Screen::Settings) {
                 wall(ui, ink::crt);
                 text(58, 24, tr("OPTIONS"), stencil(78, ink::chrome, {116, 122, 138, 255}));
@@ -3916,7 +4018,8 @@ int main(int argc, char **argv) {
                     const float right = edge - (arrows ? 54 : 20);
                     text(right, y - 5, value, v);
                     if (!glyph.empty())
-                        hintButton(right - measure(value, Face::Marker, 28) - 40, y - 1, glyph, "");
+                        hintButton(right - measure(value, Face::Marker, 28) - 12 - (isKeycap(glyph) ? keycapWidth(glyph) : 28), y - 1,
+                                   glyph, "");
                     if (arrows) {
                         auto arrow = body(22, on ? ink::acid : ink::faint);
                         arrow.align = Align::Center;
@@ -3989,7 +4092,7 @@ int main(int argc, char **argv) {
                     help = rows[size_t(std::clamp(settingRow, 0, int(rows.size()) - 1))].help;
                 }
                 if (remapping >= 0)
-                    help = tr("Press the button or trigger for this fret. Minus cancels.");
+                    help = tr("Press the button or trigger for this fret. {} cancels.", buttonWord(4, "Esc"));
                 // Help for the selected row, engraved along the bottom of the plate.
                 rect(84, 566, 1112, 1, {0, 0, 0, 150});
                 rect(84, 567, 1112, 1, {176, 180, 192, 42});
@@ -4051,7 +4154,7 @@ int main(int argc, char **argv) {
                     text(640, 556, tr("Press the guitar's frets and strum. Nothing here means the guitar is not "
                                       "reaching the game."), hint);
                     // B is one of the buttons being tested, so Minus closes the panel.
-                    hintButton(556, 620, settings.wiiGuitar ? glyphBack : "-", tr("CLOSE"));
+                    hintButton(556, 620, settings.wiiGuitar ? glyphBack : glyph(4, "ESC"), tr("CLOSE"));
                 } else if (optionsPage < 0)
                     hints({{glyphAccept, tr("OPEN")}, {glyphBack, tr("SAVE & BACK")}});
                 else
@@ -4065,7 +4168,7 @@ int main(int argc, char **argv) {
                 rect(60, 211, 1160, 1, {176, 180, 192, 42});
                 {
                     const bool empty = query.empty();
-                    std::string shown = empty && !typing ? tr("newest charts - press Y to search") : query;
+                    std::string shown = empty && !typing ? tr("newest charts - press {} to search", buttonWord(2, "/")) : query;
                     if (typing && std::fmod(ui, 1.0) < .55)
                         shown += "_";
                     auto field = body(24, empty && !typing ? ink::faint : ink::white);
@@ -4234,14 +4337,14 @@ int main(int argc, char **argv) {
                     text(62, 622, tr(downloads.found == 1 ? "{} guitar chart" : "{} guitar charts", downloads.found),
                          body(18, ink::faint));
                 if (typing) {
-                    hints({{"ENT", tr("SEARCH")}, {"ESC", tr("CANCEL")}}); // desktop typing only
+                    hints({{"[ENTER", tr("SEARCH")}, {"[ESC", tr("CANCEL")}}); // desktop typing only
                 } else {
                     std::vector<std::pair<std::string, std::string>> items = {
                         {glyphAccept, tr(downloads.current.empty() && downloads.queued.empty() ? "DOWNLOAD" : "QUEUE")},
-                        {glyphAlt, tr("SEARCH")},
+                        {altGlyph(settings.wiiGuitar, "/"), tr("SEARCH")},
                         {glyphBack, tr("BACK")}};
                     if (!downloads.current.empty() || !downloads.queued.empty())
-                        items.push_back({settings.wiiGuitar ? fretGlyph(3) : "X", tr("CANCEL ALL")});
+                        items.push_back({settings.wiiGuitar ? fretGlyph(3) : glyph(3, "X"), tr("CANCEL ALL")});
                     hints(items);
                 }
             } else if (screen == Screen::Calibrate) {
@@ -4297,7 +4400,7 @@ int main(int argc, char **argv) {
                         text(1100, 280, tr("Tap as each note"), hint);
                         text(1100, 306, tr("crosses the line."), hint);
                     }
-                    button(58, 676, "-", tr("CANCEL"));
+                    hintButton(58, 676, glyph(4, "ESC"), tr("CANCEL"));
                 } else {
                     rect(0, 0, W, H, {5, 5, 8, 150});
                     plate(390, 190, 620, 330);
@@ -4318,7 +4421,7 @@ int main(int argc, char **argv) {
                         warn.align = Align::Center;
                         text(700, 420, tr("taps were uneven - retry for a steadier read"), warn);
                     }
-                    hints({{glyphAccept, tr("KEEP")}, {glyphAlt, tr("RETRY")}, {glyphBack, tr("CANCEL")}}, 430, 470);
+                    hints({{glyphAccept, tr("KEEP")}, {altGlyph(settings.wiiGuitar, "R"), tr("RETRY")}, {glyphBack, tr("CANCEL")}}, 430, 470);
                 }
             } else if (screen == Screen::Lobby && song) {
                 wall(ui, ink::crt);
@@ -4342,7 +4445,7 @@ int main(int argc, char **argv) {
                         continue;
                     }
                     if (!seat.joined) {
-                        text(x + 24, y + 80, tr("press A to join"), marker(28, ink::dim, -3));
+                        text(x + 24, y + 80, tr("press {} to join", buttonWord(1, "Enter")), marker(28, ink::dim, -3));
                         continue;
                     }
                     // Four rows, each changed with left/right once picked with up/down.
@@ -4548,7 +4651,7 @@ int main(int argc, char **argv) {
                     auto note = marker(26, ink::dim, -2);
                     note.align = Align::Center;
                     if (screen == Screen::Results)
-                        text(640, 668, tr("A plays again   B returns to the song list"), note);
+                        text(640, 668, tr("{} plays again   {} returns to the song list", buttonWord(1, "Enter"), buttonWord(0, "Esc")), note);
                     else
                         hints({{glyphAccept, tr("SELECT")}, {glyphBack, tr("RESUME")}});
                 }
@@ -4733,9 +4836,10 @@ int main(int argc, char **argv) {
                 // Sits in the corner the vignette darkens most, so it needs to start
                 // brighter than ink::faint to stay readable through the grade.
                 text(46, 686,
-                     tr(settings.wiiGuitar ? "Plus pause    strum with no frets for open notes    Minus star power"
-                        : settings.gamepad ? "Plus pause    any fret hits open notes    X star power"
-                                           : "Plus pause    strum with no frets for open notes    X star power"),
+                     tr(settings.wiiGuitar ? "{} pause    strum with no frets for open notes    {} star power"
+                        : settings.gamepad ? "{} pause    any fret hits open notes    {} star power"
+                                           : "{} pause    strum with no frets for open notes    {} star power",
+                        buttonWord(6, "P"), settings.wiiGuitar ? buttonWord(4, "Shift") : buttonWord(3, "Shift")),
                      body(16, ink::dim));
                 if (screen == Screen::Countdown) {
                     // The frozen board stays visible so the player can see what is coming.

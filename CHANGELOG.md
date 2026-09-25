@@ -12,6 +12,13 @@
   from source, since Emscripten has no port for them.
 - The Download screen isn't available in the browser and says to use Add
   songs instead.
+- Button prompts name the keyboard's keys or the gamepad's buttons, whichever
+  was used last, instead of the Switch's. The same goes for the fret labels
+  under the highway, the gameplay help line and the other help text. The
+  desktop build gets the keyboard prompts too.
+- In the browser, gamepads confirm with the bottom face button and back out
+  with the right one, as on Xbox and PlayStation pads.
+- Tab toggles the section breakdown on the results screen.
 - Tested in headless Chromium with software WebGL: menus, song import, all four
   codecs, persistence across reloads, and quitting. Not yet played with a
   gamepad or checked for audio sync on real hardware.
