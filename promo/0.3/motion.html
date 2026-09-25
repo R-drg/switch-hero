@@ -1,0 +1,1152 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Switch Hero 0.3 Motions</title>
+<!--
+  Motions for the 0.3 release, drawn on a canvas in the game's own look:
+  grungy wall, CRT light, film grain, duct tape, brushed metal panels,
+  stencil/marker/body fonts from assets/fonts, and the highway themes and
+  note palettes from src/main.cpp and src/look.cpp.
+
+  Open with ?scene=<id>&t=<seconds> to look at one frame, or ?play to loop
+  everything in real time. render.mjs drives renderFrame() frame by frame.
+-->
+<style>
+  @font-face { font-family: Stencil; src: url(../../assets/fonts/BlackOpsOne-Regular.ttf); }
+  @font-face { font-family: Marker; src: url(../../assets/fonts/PermanentMarker-Regular.ttf); }
+  @font-face { font-family: Body; src: url(../../assets/fonts/RussoOne-Regular.ttf); }
+  html, body { margin: 0; background: #000; }
+  canvas { display: block; width: 100vw; height: auto; max-width: 1920px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+'use strict';
+const W = 1920, H = 1080, FPS = 30;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+// ---------------------------------------------------------------- maths ---
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const eOut = t => 1 - Math.pow(1 - t, 3);
+const eIn = t => t * t * t;
+const eIO = t => (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const eBack = t => { const c = 1.9; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+const smooth = t => t * t * (3 - 2 * t);
+function hash(n) {
+  n = (n ^ 61) ^ (n >>> 16); n = Math.imul(n, 9); n ^= n >>> 4;
+  n = Math.imul(n, 0x27d4eb2d); n ^= n >>> 15; return (n >>> 0) / 4294967296;
+}
+const h2 = (x, y, s = 0) => hash((Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(s, 982451653)) | 0);
+// Value noise, periodic in x and y so textures tile.
+function vnoise(x, y, px = 4096, py = 4096, s = 0) {
+  const xi = Math.floor(x), yi = Math.floor(y), fx = smooth(x - xi), fy = smooth(y - yi);
+  const m = (a, p) => ((a % p) + p) % p;
+  const a = h2(m(xi, px), m(yi, py), s), b = h2(m(xi + 1, px), m(yi, py), s);
+  const c = h2(m(xi, px), m(yi + 1, py), s), d = h2(m(xi + 1, px), m(yi + 1, py), s);
+  return lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
+}
+function fbm(x, y, px, py, s = 0, oct = 4) {
+  let v = 0, amp = .5, tot = 0;
+  for (let i = 0; i < oct; i++) {
+    v += vnoise(x, y, px, py, s + i * 17) * amp; tot += amp;
+    x *= 2; y *= 2; px *= 2; py *= 2; amp *= .5;
+  }
+  return v / tot;
+}
+const rgb = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const mixc = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const shade = (c, f) => [c[0] * f, c[1] * f, c[2] * f];
+
+// -------------------------------------------------------------- palette ---
+const INK = {
+  white: [236, 236, 240], dim: [150, 150, 162], faint: [90, 90, 102], acid: [168, 255, 62],
+  blood: [226, 32, 44], crt: [70, 150, 255], marker: [18, 18, 22], chrome: [250, 250, 255],
+  steel: [120, 124, 136], power: [90, 200, 255], gold: [255, 214, 90],
+};
+
+// Note palettes (src/look.cpp), with their Portuguese names (src/lang.cpp).
+const one = (c, o) => [c, c, c, c, c, o];
+const two = (a, b, o) => [a, b, a, b, a, o];
+const PALETTES = [
+  ['CLÁSSICO', [[40, 210, 70], [232, 36, 44], [250, 208, 28], [38, 112, 246], [255, 132, 18], [178, 76, 255]]],
+  ['PASTEL', [[140, 226, 170], [255, 150, 172], [255, 232, 140], [148, 196, 255], [255, 186, 138], [200, 166, 255]]],
+  ['NEON', [[57, 255, 20], [255, 20, 110], [255, 240, 0], [0, 210, 255], [255, 110, 0], [196, 60, 255]]],
+  ['DALTÔNICO', [[0, 158, 115], [213, 94, 0], [240, 228, 66], [86, 180, 233], [230, 159, 0], [204, 121, 167]]],
+  ['SANGUE', one([196, 8, 18], [110, 0, 10])],
+  ['OSSO', one([232, 222, 196], [170, 158, 132])],
+  ['OBSIDIANA', one([52, 40, 74], [120, 60, 160])],
+  ['DISCO DE OURO', one([255, 190, 30], [255, 236, 160])],
+  ['PLATINA', one([206, 212, 226], [150, 160, 180])],
+  ['RADIOATIVO', one([120, 255, 40], [230, 255, 60])],
+  ['FANTASMA', one([190, 214, 236], [240, 248, 255])],
+  ['ABELHA', two([255, 206, 0], [34, 32, 30], [255, 236, 120])],
+  ['BENGALA DOCE', two([230, 20, 40], [244, 244, 240], [120, 220, 120])],
+  ['VAPORWAVE', two([255, 106, 200], [70, 230, 255], [180, 120, 255])],
+  ['REALEZA', two([120, 40, 200], [255, 196, 40], [250, 240, 220])],
+  ['CYBERPUNK', two([255, 230, 0], [255, 0, 150], [0, 255, 240])],
+  ['INFERNO', [[255, 40, 0], [255, 100, 0], [255, 190, 0], [255, 100, 0], [255, 40, 0], [255, 240, 190]]],
+  ['GELEIRA', [[150, 236, 255], [80, 190, 255], [220, 250, 255], [40, 130, 230], [170, 220, 255], [255, 255, 255]]],
+  ['PÔR DO SOL', [[255, 90, 120], [255, 130, 90], [255, 190, 90], [200, 90, 200], [120, 70, 200], [255, 220, 180]]],
+  ['MAR PROFUNDO', [[0, 200, 180], [0, 140, 200], [60, 230, 220], [20, 80, 180], [0, 170, 140], [140, 255, 240]]],
+  ['RASTA', [[0, 160, 60], [255, 210, 0], [220, 20, 30], [255, 210, 0], [0, 160, 60], [40, 30, 20]]],
+  ['FLIPERAMA', [[0, 228, 54], [255, 0, 77], [255, 236, 39], [41, 173, 255], [255, 163, 0], [255, 119, 168]]],
+  ['CAMUFLADO', [[96, 112, 52], [136, 110, 70], [70, 88, 44], [160, 144, 100], [84, 70, 50], [186, 176, 130]]],
+  ['SAKURA', [[255, 196, 214], [240, 110, 160], [255, 236, 244], [200, 80, 140], [255, 160, 190], [140, 200, 120]]],
+];
+const PAL = Object.fromEntries(PALETTES.map(([n, c]) => [n, c]));
+
+// ------------------------------------------------------------- textures ---
+function paint(w, h, fn) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'), img = g.createImageData(w, h), d = img.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const p = fn(x, y), i = (y * w + x) * 4;
+    d[i] = p[0]; d[i + 1] = p[1]; d[i + 2] = p[2]; d[i + 3] = p.length > 3 ? p[3] : 255;
+  }
+  g.putImageData(img, 0, 0); return c;
+}
+function offscreen(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+
+const TEX = {};
+function buildTextures() {
+  // Wall: dark concrete blocks, stains and scratches, like look::wall().
+  TEX.wall = paint(960, 540, (x, y) => {
+    const n = fbm(x / 140, y / 140, 999, 999, 3, 5);
+    const stain = fbm(x / 60, y / 60, 999, 999, 9, 3);
+    const seamX = (x % 176) < 2 ? -7 : 0, seamY = (y % 132) < 2 ? -6 : 0;
+    const grit = h2(x, y, 5) * 7;
+    const light = (1 - y / 540) * 6 + (1 - x / 960) * 4;
+    let v = 17 + n * 22 + (stain > .62 ? -(stain - .62) * 30 : 0) + seamX + seamY + grit + light;
+    return [v, v + 1, v + 5];
+  });
+  // Scratches on the wall
+  { const g = TEX.wall.getContext('2d'); g.lineWidth = .6;
+    for (let i = 0; i < 70; i++) {
+      const x = h2(i, 1, 44) * 960, y = h2(i, 2, 44) * 540, l = 8 + h2(i, 3, 44) * 40, a = h2(i, 4, 44) * Math.PI;
+      g.strokeStyle = `rgba(200,205,220,${.03 + h2(i, 5, 44) * .05})`;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
+    } }
+  // Film grain: sparse warm specks.
+  TEX.grain = paint(512, 512, (x, y) => {
+    const g = h2(x, y, 77), s = g > .7 ? (g - .7) / .3 : 0;
+    return [255, 244, 228, Math.pow(s, 1.7) * 255];
+  });
+  // Duct tape: woven silver cloth with torn ends.
+  TEX.tape = paint(480, 108, (x, y) => {
+    const jl = 7 + h2(y / 4 | 0, 1, 977) * 17, jr = 7 + h2(y / 4 | 0, 2, 613) * 17;
+    if (x < jl || 479 - x < jr) return [0, 0, 0, 0];
+    const weave = (x % 6 < 1.5 ? -10 : 0) + (y % 7 < 1.5 ? -8 : 0);
+    const n = fbm(x / 60, y / 30, 999, 999, 11, 3) * 30;
+    const sheen = Math.exp(-Math.pow((y - 30) / 15, 2)) * 22;
+    const edge = (y < 3 || y > 104) ? -30 : 0;
+    const v = 128 + n + weave + sheen + edge + h2(x, y, 131) * 8;
+    return [v, v, v + 4, 250];
+  });
+  // Brushed metal for panels.
+  TEX.metal = paint(480, 240, (x, y) => {
+    const brush = fbm(x / 135, y / 2.2, 999, 999, 23, 3) * 26;
+    const light = (1 - y / 240) * 20;
+    const v = 26 + brush + light + h2(x, y, 7177) * 5;
+    return [v, v + 1, v + 6];
+  });
+  buildBoards();
+}
+
+// -------------------------------------------------------------- highways ---
+// The thirteen highway themes of src/main.cpp, with a surface painted in the
+// spirit of each look::Board. Surfaces are 256 x 512 and tile vertically.
+const TW = 256, TH = 512;
+function boardTex(kind) {
+  const u = x => x / TW, v = y => y / TH;
+  switch (kind) {
+    case 'grip': return paint(TW, TH, (x, y) => {
+      const n = fbm(x / 20, y / 20, TW / 20, TH / 20, 1) * 16, g = h2(x, y, 3) > .93 ? 14 : 0;
+      const c = 14 + n + g; return [c, c + 1, c + 4]; });
+    case 'rosewood': return paint(TW, TH, (x, y) => {
+      const n = fbm(x / 6, y / 90, TW / 6, TH / 90, 2, 5), s = Math.sin(x / 3 + n * 12) * .5 + .5;
+      return mixc(mixc([48, 20, 12], [112, 54, 30], n), [30, 12, 8], s * .35); });
+    case 'synth': return paint(TW, TH, (x, y) => {
+      const n = fbm(x / 40, y / 40, TW / 40, TH / 40, 5) * 14;
+      return [16 + n, 6 + n * .3, 34 + n]; });
+    case 'pastel': return paint(TW, TH, (x, y) => {
+      const a = fbm(x / 70, y / 70, TW / 70, TH / 70, 7), b = fbm(x / 50, y / 50, TW / 50, TH / 50, 9);
+      let c = mixc([222, 206, 246], [250, 212, 232], smooth(a)); c = mixc(c, [206, 226, 252], smooth(b) * .7);
+      return h2(x, y, 9) > .996 ? [255, 255, 255] : c; });
+    case 'hell': return paint(TW, TH, (x, y) => {
+      const n = fbm(x / 48, y / 48, TW / 48, TH / 48, 11, 5), d = Math.abs(n - .5);
+      const heat = clamp(1 - d / .045);
+      let c = mixc([26, 5, 2], [60, 12, 4], fbm(x / 20, y / 20, TW / 20, TH / 20, 3));
+      c = mixc(mixc(c, [230, 60, 10], heat), [255, 214, 120], clamp(heat * 2 - 1.2)); return c; });
+    case 'plate': return paint(TW, TH, (x, y) => {
+      const cs = 32, cx = ((x % cs) + cs) % cs - cs / 2, cy = ((y % cs) + cs) % cs - cs / 2;
+      const odd = ((Math.floor(x / cs) + Math.floor(y / cs)) & 1);
+      const a = odd ? .7 : -.7;
+      const rx = cx * Math.cos(a) - cy * Math.sin(a), ry = cx * Math.sin(a) + cy * Math.cos(a);
+      const d = Math.pow(rx / 11, 2) + Math.pow(ry / 3.2, 2);
+      const n = fbm(x / 30, y / 30, TW / 30, TH / 30, 13) * 18;
+      let v = 70 + n;
+      if (d < 1) v += 40 * (1 - d) - (ry > 0 ? 25 : -10);
+      return [v, v + 2, v + 8]; });
+    case 'carbon': return paint(TW, TH, (x, y) => {
+      const cs = 16, cx = Math.floor(x / cs), cy = Math.floor(y / cs), fx = (x % cs) / cs, fy = (y % cs) / cs;
+      const horiz = ((cx + cy) & 1) === 0;
+      const f = horiz ? Math.sin(fy * Math.PI) : Math.sin(fx * Math.PI);
+      const v = 12 + f * 30 + h2(x, y, 4) * 5; return [v, v, v + 3]; });
+    case 'storm': return paint(TW, TH, (x, y) => {
+      const n = fbm(x / 64, y / 64, TW / 64, TH / 64, 15, 5);
+      return mixc([6, 8, 20], [56, 70, 118], smooth(clamp(n * 1.5 - .3))); });
+    case 'toxic': return paint(TW, TH, (x, y) => {
+      const n = fbm(x / 40, y / 40, TW / 40, TH / 40, 17, 4), d = Math.abs(n - .5);
+      let c = mixc([6, 18, 6], [26, 44, 16], fbm(x / 16, y / 16, TW / 16, TH / 16, 5));
+      c = mixc(c, [120, 255, 40], clamp(1 - d / .025) * .9);
+      const b = h2(x >> 3, y >> 3, 19) > .985 ? .6 : 0;
+      return mixc(c, [170, 255, 90], b); });
+    case 'zebra': return paint(TW, TH, (x, y) => {
+      const n = fbm(x / 60, y / 60, TW / 60, TH / 60, 21);
+      const s = Math.sin(y / TH * Math.PI * 2 * 9 + x / 30 + n * 7);
+      return s > .1 ? [238, 236, 230] : [16, 16, 18]; });
+    case 'checker': return paint(TW, TH, (x, y) => {
+      const on = ((Math.floor(x / 51.2) + Math.floor(y / 51.2)) & 1) === 0;
+      const v = on ? 232 : 18; return [v, v, v - 2]; });
+    case 'nebula': return paint(TW, TH, (x, y) => {
+      const a = fbm(x / 70, y / 70, TW / 70, TH / 70, 23, 5), b = fbm(x / 50, y / 50, TW / 50, TH / 50, 29, 5);
+      let c = [6, 6, 16];
+      c = mixc(c, [120, 40, 170], smooth(clamp(a * 2 - .7)) * .8);
+      c = mixc(c, [20, 150, 170], smooth(clamp(b * 2 - .9)) * .6);
+      return h2(x, y, 31) > .994 ? mixc(c, [255, 255, 255], .5 + h2(x, y, 3) * .5) : c; });
+    case 'frost': return paint(TW, TH, (x, y) => {
+      const depth = fbm(x / 60, y / 60, TW / 60, TH / 60, 37, 4);
+      const crack = clamp(1 - Math.abs(fbm(x / 30, y / 30, TW / 30, TH / 30, 41, 4) - .5) / .02);
+      let c = mixc([28, 70, 120], [120, 190, 230], depth);
+      c = mixc(c, [196, 232, 255], crack * .8);
+      return h2(x, y, 13) > .993 ? [255, 255, 255] : c; });
+  }
+}
+// name, surface, near tint, far tint, lane line, beat line, rail hot, rail far,
+// haze, strike, effects (from HighwayTheme in src/main.cpp).
+const HW = [
+  ['LIXA', 'grip', [255, 255, 255], [255, 255, 255], [120, 130, 150, .16], [150, 160, 180], [228, 230, 240], [62, 66, 78], [7, 8, 11], []],
+  ['JACARANDÁ', 'rosewood', [255, 255, 255], [200, 190, 180], [210, 206, 196, .27], [214, 216, 224], [238, 228, 204], [92, 80, 64], [10, 6, 5], ['strings', 'inlays']],
+  ['SYNTHWAVE', 'synth', [255, 255, 255], [255, 200, 255], [255, 60, 210, .47], [60, 225, 255], [255, 70, 210], [70, 20, 90], [12, 4, 22], ['sun', 'glow']],
+  ['SONHO PASTEL', 'pastel', [226, 212, 238], [188, 172, 216], [150, 118, 196, .5], [236, 128, 184], [255, 214, 234], [150, 130, 176], [34, 26, 46], []],
+  ['FOGO DO INFERNO', 'hell', [255, 255, 255], [170, 120, 110], [255, 90, 20, .27], [255, 120, 30], [255, 90, 10], [70, 10, 4], [20, 4, 2], ['glow', 'embers']],
+  ['CHAPA XADREZ', 'plate', [255, 255, 255], [170, 174, 186], [20, 20, 24, .43], [30, 30, 34], [255, 206, 0], [24, 24, 26], [8, 8, 10], ['hazard', 'bold']],
+  ['FIBRA DE CARBONO', 'carbon', [255, 255, 255], [190, 190, 200], [220, 30, 40, .35], [230, 36, 46], [240, 36, 44], [60, 8, 10], [6, 6, 8], ['bold']],
+  ['TEMPESTADE', 'storm', [255, 255, 255], [170, 180, 210], [120, 190, 255, .35], [140, 210, 255], [170, 220, 255], [30, 40, 70], [6, 8, 16], ['glow', 'lightning']],
+  ['LIXO TÓXICO', 'toxic', [170, 190, 160], [120, 150, 110], [110, 255, 40, .35], [150, 255, 60], [230, 255, 0], [20, 20, 16], [4, 12, 4], ['glow', 'hazard']],
+  ['ZEBRA', 'zebra', [196, 196, 196], [140, 140, 140], [255, 40, 150, .43], [255, 40, 150], [255, 60, 170], [40, 10, 30], [6, 6, 6], ['bold']],
+  ['XADREZ', 'checker', [255, 255, 255], [160, 160, 160], [230, 20, 30, .43], [230, 20, 30], [240, 240, 236], [16, 16, 18], [6, 6, 7], ['hazard', 'bold']],
+  ['NEBULOSA', 'nebula', [255, 255, 255], [200, 190, 255], [170, 120, 255, .35], [120, 200, 255], [200, 150, 255], [40, 20, 70], [4, 3, 10], ['glow']],
+  ['CONGELADO', 'frost', [196, 210, 226], [130, 156, 186], [255, 255, 255, .43], [220, 245, 255], [236, 250, 255], [60, 100, 140], [4, 10, 20], ['glow']],
+].map(([name, kind, near, far, lane, beat, railHot, railFar, haze, fx]) =>
+  ({ name, kind, near, far, lane, beat, railHot, railFar, haze, fx: new Set(fx) }));
+const THEME = Object.fromEntries(HW.map(h => [h.name, h]));
+function buildBoards() {
+  for (const h of HW) {
+    const raw = boardTex(h.kind);
+    // Bake the near-to-far tint into a copy per depth band is not possible
+    // (depth varies along the board), so keep the raw surface; tint is drawn
+    // as a multiply gradient over the board.
+    h.tex = raw;
+  }
+}
+
+// ---------------------------------------------------------------- charts ---
+// A deterministic auto-played chart: runs, chords and the odd sustain.
+function makeChart(seed, start, end, opt = {}) {
+  const notes = []; let t = start, i = 0, lane = 2;
+  const steps = opt.steps || [.2, .2, .4, .2, .1, .1, .3];
+  while (t < end) {
+    const r = h2(i, 1, seed);
+    lane = clamp(lane + (r < .5 ? -1 : 1) * (1 + (h2(i, 2, seed) > .7 ? 1 : 0)), 0, 4) | 0;
+    if (h2(i, 3, seed) > .88) lane = (h2(i, 4, seed) * 5) | 0;
+    const sus = h2(i, 5, seed) > (opt.susRate ?? .9) ? .45 + h2(i, 6, seed) * .5 : 0;
+    notes.push({ t, lane, sus, i });
+    if (h2(i, 7, seed) > (opt.chordRate ?? .86)) notes.push({ t, lane: (lane + 2) % 5, sus: 0, i: i + .5 });
+    t += sus ? sus + .15 : steps[(h2(i, 8, seed) * steps.length) | 0];
+    i++;
+  }
+  return notes;
+}
+
+// ------------------------------------------------------------ drawing kit ---
+const FACE = { stencil: 'Stencil', marker: 'Marker', body: 'Body' };
+// Text in the game's styles: vertical gradient face, outline, drop shadow
+// and an optional coloured glow (look::Style).
+function text(str, x, y, o = {}) {
+  const size = o.size || 40;
+  ctx.save();
+  ctx.translate(x, y);
+  if (o.angle) ctx.rotate(o.angle * Math.PI / 180);
+  if (o.scale !== undefined) ctx.scale(o.scale, o.scale);
+  ctx.globalAlpha *= o.alpha ?? 1;
+  ctx.font = `${size}px ${FACE[o.face || 'body']}`;
+  ctx.textAlign = o.align || 'left';
+  ctx.textBaseline = 'alphabetic';
+  if (o.tracking) ctx.letterSpacing = `${o.tracking}px`;
+  if (o.glow) {
+    ctx.shadowColor = rgb(o.glow, o.glowA ?? .8); ctx.shadowBlur = o.glowBlur || size * .45;
+    ctx.fillStyle = rgb(o.glow, o.glowA ?? .8);
+    ctx.fillText(str, 0, 0); ctx.fillText(str, 0, 0);
+    ctx.shadowBlur = 0;
+  }
+  if (o.shadow !== false) {
+    ctx.fillStyle = 'rgba(0,0,0,.72)';
+    ctx.fillText(str, size * .035, size * .06);
+  }
+  if (o.outline) {
+    ctx.lineJoin = 'round'; ctx.lineWidth = o.outlineW || size * .1;
+    ctx.strokeStyle = rgb(o.outline); ctx.strokeText(str, 0, 0);
+  }
+  const top = o.top || INK.white, bot = o.bottom || top;
+  if (o.chrome) {
+    const g = ctx.createLinearGradient(0, -size * .74, 0, size * .02);
+    g.addColorStop(0, rgb(top)); g.addColorStop(.46, rgb(mixc(top, bot, .35)));
+    g.addColorStop(.5, rgb(bot)); g.addColorStop(1, rgb(mixc(bot, top, .45)));
+    ctx.fillStyle = g;
+  } else if (top !== bot) {
+    const g = ctx.createLinearGradient(0, -size * .74, 0, 0);
+    g.addColorStop(0, rgb(top)); g.addColorStop(1, rgb(bot)); ctx.fillStyle = g;
+  } else ctx.fillStyle = rgb(top);
+  ctx.fillText(str, 0, 0);
+  const w = ctx.measureText(str).width;
+  ctx.restore();
+  return w;
+}
+const stencil = (s, x, y, size, o = {}) => text(s, x, y, { face: 'stencil', size, top: INK.chrome, bottom: INK.steel, chrome: true, outline: [10, 10, 14], ...o });
+const marker = (s, x, y, size, o = {}) => text(s, x, y, { face: 'marker', size, top: INK.marker, shadow: false, ...o });
+const body = (s, x, y, size, o = {}) => text(s, x, y, { face: 'body', size, top: INK.white, ...o });
+function measure(s, face, size) { ctx.save(); ctx.font = `${size}px ${FACE[face]}`; const w = ctx.measureText(s).width; ctx.restore(); return w; }
+
+function tape(cx, cy, w, h, angle = 0, alpha = 1) {
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(cx, cy); ctx.rotate(angle * Math.PI / 180);
+  ctx.globalAlpha *= .45; ctx.drawImage(TEX.tape, -w / 2 + 5, -h / 2 + 8, w, h);
+  ctx.globalAlpha /= .45; ctx.drawImage(TEX.tape, -w / 2, -h / 2, w, h);
+  ctx.restore();
+}
+// A strip of tape with a marker label on it, slapped on at t0.
+function tapeLabel(str, cx, cy, size, t, t0, o = {}) {
+  const p = seg(t, t0, t0 + .32);
+  if (p <= 0) return;
+  const w = measure(str, 'marker', size) + size * 2.2, h = size * 1.55;
+  const s = lerp(1.35, 1, eBack(p)), a = o.angle ?? -2;
+  ctx.save(); ctx.globalAlpha *= clamp(p * 3) * (o.alpha ?? 1);
+  ctx.translate(cx, cy); ctx.scale(s, s); ctx.rotate((a + (1 - p) * 6) * Math.PI / 180);
+  tape(0, 0, w, h, 0);
+  marker(str, 0, size * .34, size, { align: 'center', top: o.ink || INK.marker });
+  ctx.restore();
+}
+function screw(x, y, a) {
+  const g = ctx.createRadialGradient(x - 2, y - 2, 1, x, y, 8);
+  g.addColorStop(0, '#9a9ca6'); g.addColorStop(1, '#2a2b30');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 7, 0, 7); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(x - 5 * Math.cos(a), y - 5 * Math.sin(a)); ctx.lineTo(x + 5 * Math.cos(a), y + 5 * Math.sin(a)); ctx.stroke();
+}
+function panel(x, y, w, h, alpha = 1) {
+  ctx.save(); ctx.globalAlpha *= alpha;
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(x + 8, y + 12, w, h);
+  ctx.drawImage(TEX.metal, x, y, w, h);
+  ctx.fillStyle = 'rgba(255,255,255,.16)'; ctx.fillRect(x, y, w, 2);
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x, y + h - 2, w, 2);
+  ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+  screw(x + 18, y + 18, .6); screw(x + w - 18, y + 18, 2.1); screw(x + 18, y + h - 18, 1.2); screw(x + w - 18, y + h - 18, .2);
+  ctx.restore();
+}
+function star(cx, cy, r, ang, fill, edge) {
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(ang * Math.PI / 180);
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rr = i & 1 ? r * .45 : r, a = -Math.PI / 2 + i * Math.PI / 5;
+    ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+  }
+  ctx.closePath(); ctx.fillStyle = rgb(fill); ctx.fill();
+  ctx.lineWidth = r * .12; ctx.strokeStyle = rgb(edge); ctx.stroke(); ctx.restore();
+}
+function glowSpot(x, y, r, c, a) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(c, a)); g.addColorStop(1, rgb(c, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+}
+function cd(cx, cy, r, ang, alpha = 1) {
+  ctx.save(); ctx.globalAlpha *= alpha;
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.beginPath(); ctx.arc(cx + 10, cy + 16, r, 0, 7); ctx.fill();
+  const g = ctx.createConicGradient(ang, cx, cy);
+  const stops = ['#b8bccb', '#8a7fc0', '#6e5aa8', '#7fb7c0', '#c8cad4', '#9a8cc8', '#5d4f98', '#86c4b4', '#b8bccb'];
+  stops.forEach((s, i) => g.addColorStop(i / (stops.length - 1), s));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.fill();
+  ctx.strokeStyle = 'rgba(210,212,222,.9)'; ctx.lineWidth = r * .025; ctx.stroke();
+  ctx.strokeStyle = 'rgba(30,30,40,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx, cy, r * .74, 0, 7); ctx.stroke();
+  ctx.fillStyle = '#d8d9e0'; ctx.beginPath(); ctx.arc(cx, cy, r * .34, 0, 7); ctx.fill();
+  ctx.fillStyle = '#a4a5ae'; ctx.beginPath(); ctx.arc(cx, cy, r * .22, 0, 7); ctx.fill();
+  ctx.fillStyle = '#0c0c0e'; ctx.beginPath(); ctx.arc(cx, cy, r * .08, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+// Background: grungy wall, CRT light and dust (look::wall).
+function wall(t, light = INK.crt) {
+  ctx.drawImage(TEX.wall, 0, 0, W, H);
+  const lx = 300 + Math.sin(t * .4) * 80, ly = 900 + Math.cos(t * .3) * 40;
+  glowSpot(lx, ly, 900, light, .13);
+  glowSpot(1500, 120, 700, [255, 170, 110], .035);
+  // dust motes
+  for (let i = 0; i < 26; i++) {
+    const x = (h2(i, 1, 51) * W + t * (8 + h2(i, 2, 51) * 20)) % W;
+    const y = (h2(i, 3, 51) * H - t * (4 + h2(i, 4, 51) * 10) + H * 4) % H;
+    ctx.fillStyle = `rgba(220,220,235,${.08 + .1 * Math.sin(t * 2 + i) ** 2})`;
+    ctx.fillRect(x, y, 2, 2);
+  }
+}
+// Grade pass: vignette, scan lines, flicker and film grain.
+let SCAN;
+function grade(frame) {
+  if (!SCAN) {
+    SCAN = offscreen(4, 4); const g = SCAN.getContext('2d');
+    g.fillStyle = 'rgba(0,0,0,.16)'; g.fillRect(0, 0, 4, 1);
+  }
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.78)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = ctx.createPattern(SCAN, 'repeat'); ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = `rgba(0,0,0,${.02 + h2(Math.floor(frame / 2.5), 9, 3) * .03})`; ctx.fillRect(0, 0, W, H);
+  // Grain moves at 12 fps with 2 px specks, as film would, which also keeps
+  // the encoded video a sane size.
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .13;
+  const gf = Math.floor(frame / 2.5), ox = h2(gf, 1, 8) * 1024, oy = h2(gf, 2, 8) * 1024;
+  for (let y = -oy; y < H; y += 1024) for (let x = -ox; x < W; x += 1024) ctx.drawImage(TEX.grain, x, y, 1024, 1024);
+  ctx.restore();
+}
+
+// ------------------------------------------------------------ the highway ---
+// A board in perspective. z is depth: 0 at the near edge, 1 at the far end.
+// Screen x and y are affine in s(z) = 1 / (1 + k z), which is what a camera
+// looking down the board would see.
+const STRIKE = .1;
+function geo(B) {
+  const s1 = B.wFar / B.wNear, k = 1 / s1 - 1;
+  const s = z => 1 / (1 + k * z);
+  const y = z => B.yNear - (B.yNear - B.yFar) * (1 - s(z)) / (1 - s1);
+  const w = z => B.wNear * s(z);
+  const zAtY = yy => { const f = (B.yNear - yy) / (B.yNear - B.yFar), ss = 1 - f * (1 - s1); return (1 / ss - 1) / k; };
+  const x = (u, z) => B.cx + (u - .5) * w(z);
+  return { s, y, w, x, zAtY };
+}
+function boardPath(G, z0 = 0, z1 = 1) {
+  ctx.beginPath();
+  ctx.moveTo(G.x(0, z0), G.y(z0)); ctx.lineTo(G.x(0, z1), G.y(z1));
+  ctx.lineTo(G.x(1, z1), G.y(z1)); ctx.lineTo(G.x(1, z0), G.y(z0)); ctx.closePath();
+}
+function gem(x, y, rx, color, alpha, star = false) {
+  const ry = rx * .42, th = ry * .6;
+  ctx.save(); ctx.globalAlpha *= alpha;
+  const c = star ? [150, 220, 255] : color;
+  // puck body
+  ctx.fillStyle = rgb(shade(c, .35));
+  ctx.beginPath(); ctx.ellipse(x, y + th, rx, ry, 0, 0, 7); ctx.fill();
+  ctx.fillRect(x - rx, y, rx * 2, th);
+  // gunmetal bezel then the jewel
+  const bz = ctx.createLinearGradient(x, y - ry, x, y + ry);
+  bz.addColorStop(0, '#e8e9ef'); bz.addColorStop(1, '#6a6c76');
+  ctx.fillStyle = bz; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, 7); ctx.fill();
+  const jg = ctx.createRadialGradient(x - rx * .25, y - ry * .5, rx * .05, x, y, rx * .85);
+  jg.addColorStop(0, rgb(mixc(c, [255, 255, 255], .55))); jg.addColorStop(.55, rgb(c)); jg.addColorStop(1, rgb(shade(c, .55)));
+  ctx.fillStyle = jg; ctx.beginPath(); ctx.ellipse(x, y - ry * .06, rx * .8, ry * .74, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.beginPath(); ctx.ellipse(x - rx * .22, y - ry * .38, rx * .26, ry * .16, 0, 0, 7); ctx.fill();
+  ctx.restore();
+}
+function flame(x, y, r, t, power = false, amt = 1) {
+  if (amt <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const ramp = power ? [[10, 30, 150], [40, 130, 255], [150, 220, 255], [240, 252, 255]]
+    : [[120, 12, 0], [255, 96, 6], [255, 196, 46], [255, 250, 226]];
+  for (let i = 0; i < 7; i++) {
+    const f = i / 6, wob = Math.sin(t * 31 + i * 1.7) * r * .12 * f;
+    const cy = y - r * .2 - f * r * 2.1 * amt, rr = r * (1 - f * .72) * (.8 + .2 * Math.sin(t * 23 + i));
+    const c = ramp[Math.min(3, Math.floor((1 - f) * 3.2))];
+    const g = ctx.createRadialGradient(x + wob, cy, 0, x + wob, cy, rr);
+    g.addColorStop(0, rgb(ramp[3], .55 * amt * (1 - f * .5))); g.addColorStop(.35, rgb(c, .45 * amt)); g.addColorStop(1, rgb(c, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x + wob, cy, rr, rr * 1.25, 0, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawBoard(B) {
+  const th = B.theme, G = geo(B), t = B.time, speed = B.speed || .55;
+  const pal = B.palette || PAL['CLÁSSICO'];
+  ctx.save(); ctx.globalAlpha *= B.alpha ?? 1;
+  if (B.clip) { ctx.beginPath(); ctx.rect(...B.clip); ctx.clip(); }
+  // sun behind the far end (Synthwave)
+  if (th.fx.has('sun')) {
+    const sx = B.cx, sr = B.wFar * .38, sy = B.yFar - sr * .1;
+    glowSpot(sx, sy - sr * .4, sr * 2.2, [255, 80, 160], .25);
+    ctx.save(); ctx.beginPath(); ctx.arc(sx, sy - sr * .45, sr, Math.PI, 0); ctx.closePath(); ctx.clip();
+    const g = ctx.createLinearGradient(0, sy - sr * 1.45, 0, sy);
+    g.addColorStop(0, '#ffd86a'); g.addColorStop(.6, '#ff6a8a'); g.addColorStop(1, '#ff3c8c');
+    ctx.fillStyle = g; ctx.fillRect(sx - sr, sy - sr * 1.5, sr * 2, sr * 1.5);
+    ctx.fillStyle = 'rgba(8,6,14,1)';
+    for (let i = 0; i < 6; i++) { const yy = sy - sr * .45 - i * sr * .13; ctx.fillRect(sx - sr, yy, sr * 2, sr * .045 * (6 - i) / 2); }
+    ctx.restore();
+  }
+  // shadow under the board
+  ctx.save(); ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.filter = 'blur(12px)';
+  boardPath(G); ctx.translate(0, 0); ctx.fill(); ctx.restore();
+  // the surface, one screen row at a time
+  ctx.save(); boardPath(G); ctx.clip();
+  const y0 = G.y(1), y1 = G.y(0), rows = y1 - y0, step = Math.max(1, rows / 360);
+  const texDepth = .5, scroll = t * speed;
+  for (let yy = y0; yy < y1; yy += step) {
+    const z = G.zAtY(yy + step / 2), w = G.w(z);
+    let v = ((z + scroll) / texDepth) % 1; if (v < 0) v += 1;
+    ctx.drawImage(th.tex, 0, Math.min(TH - 1, v * TH), TW, 1, B.cx - w / 2, yy, w, step + .8);
+  }
+  // near/far tint
+  ctx.globalCompositeOperation = 'multiply';
+  let g = ctx.createLinearGradient(0, y1, 0, y0);
+  g.addColorStop(0, rgb(th.near)); g.addColorStop(1, rgb(th.far));
+  ctx.fillStyle = g; ctx.fillRect(B.cx - B.wNear, y0, B.wNear * 2, rows);
+  ctx.globalCompositeOperation = 'source-over';
+  // lane lines / strings
+  const gl = th.fx.has('glow');
+  for (let i = 1; i < 5; i++) {
+    const u = i / 5;
+    ctx.strokeStyle = rgb(th.lane, th.lane[3]); ctx.lineWidth = th.fx.has('strings') ? 2 : 1.6 * B.wNear / 900;
+    if (gl) { ctx.shadowColor = rgb(th.lane, 1); ctx.shadowBlur = 10; }
+    ctx.beginPath(); ctx.moveTo(G.x(u, 0), G.y(0)); ctx.lineTo(G.x(u, 1), G.y(1)); ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  // beat lines, every half second, moving with the notes
+  const bw = th.fx.has('bold') ? 3 : 2;
+  for (let k = Math.floor((t - .3) / .5); k < (t + 1 / speed + .2) / .5; k++) {
+    const z = (k * .5 - t) * speed + STRIKE; if (z < 0 || z > 1) continue;
+    const a = (1 - z) * (k % 4 === 0 ? .8 : .45);
+    ctx.fillStyle = rgb(th.beat, a);
+    if (gl) { ctx.shadowColor = rgb(th.beat, 1); ctx.shadowBlur = 12; }
+    ctx.fillRect(G.x(0, z), G.y(z) - bw * G.s(z) / 2, G.w(z), Math.max(1, bw * G.s(z) * B.wNear / 900 * 1.4));
+    ctx.shadowBlur = 0;
+    if (th.fx.has('inlays') && k % 4 === 0) {
+      ctx.fillStyle = `rgba(236,232,220,${.8 * (1 - z)})`;
+      const zz = z + .02; ctx.beginPath(); ctx.ellipse(B.cx, G.y(zz), G.w(zz) * .025, G.w(zz) * .012, 0, 0, 7); ctx.fill();
+    }
+  }
+  // embers / lightning
+  if (th.fx.has('embers')) for (let i = 0; i < 26; i++) {
+    const u = h2(i, 1, 61), z = ((h2(i, 2, 61) + t * (.12 + h2(i, 3, 61) * .1)) % 1);
+    ctx.fillStyle = `rgba(255,${140 + h2(i, 4, 61) * 90 | 0},40,${(1 - z) * .9})`;
+    const r = 3 * G.s(z) * B.wNear / 900; ctx.beginPath(); ctx.arc(G.x(u, z), G.y(z) - Math.sin(t * 3 + i) * 6, r + 1, 0, 7); ctx.fill();
+  }
+  if (th.fx.has('lightning')) {
+    const cyc = (t + .7) % 1.9;
+    if (cyc < .16) {
+      const sd = Math.floor((t + .7) / 1.9); let u = .2 + h2(sd, 1, 71) * .6;
+      ctx.strokeStyle = `rgba(220,240,255,${1 - cyc / .16})`; ctx.lineWidth = 3; ctx.shadowColor = '#9cf'; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.moveTo(G.x(u, 1), G.y(1));
+      for (let j = 1; j <= 12; j++) { u += (h2(sd, j, 73) - .5) * .12; const z = 1 - j / 12 * .8; ctx.lineTo(G.x(u, z), G.y(z)); }
+      ctx.stroke(); ctx.shadowBlur = 0;
+    }
+  }
+  // haze at the far end, so things fade in from the dark
+  g = ctx.createLinearGradient(0, y0, 0, G.y(.62));
+  g.addColorStop(0, rgb(th.haze, 1)); g.addColorStop(1, rgb(th.haze, 0));
+  ctx.fillStyle = g; ctx.fillRect(B.cx - B.wNear, y0, B.wNear * 2, G.y(.62) - y0);
+  ctx.restore();
+  // rails
+  const solo = B.solo || 0;
+  const railW = B.wNear * .022;
+  for (const side of [0, 1]) {
+    for (let i = 0; i < 30; i++) {
+      const za = i / 30, zb = (i + 1) / 30;
+      let c = mixc(th.railHot, th.railFar, (za + zb) / 2);
+      if (th.fx.has('hazard') && (Math.floor((za + t * speed) * 16) & 1)) c = mixc(th.railFar, [0, 0, 0], .2);
+      if (solo) c = mixc(c, mixc([60, 150, 255], [20, 50, 140], za), solo);
+      const d = side ? 1 : -1;
+      const xa = G.x(side, za), xb = G.x(side, zb), wa = railW * G.s(za), wb = railW * G.s(zb);
+      ctx.fillStyle = rgb(c);
+      ctx.beginPath(); ctx.moveTo(xa, G.y(za)); ctx.lineTo(xb, G.y(zb)); ctx.lineTo(xb + d * wb, G.y(zb)); ctx.lineTo(xa + d * wa, G.y(za)); ctx.closePath(); ctx.fill();
+    }
+  }
+  if (solo) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.strokeStyle = `rgba(60,140,255,${.5 * solo})`;
+    ctx.lineWidth = railW * 1.6; ctx.shadowColor = '#3c8cff'; ctx.shadowBlur = 30;
+    for (const side of [0, 1]) { ctx.beginPath(); ctx.moveTo(G.x(side, 0), G.y(0)); ctx.lineTo(G.x(side, 1), G.y(1)); ctx.stroke(); }
+    ctx.restore();
+  }
+  // strike targets
+  const notes = B.notes || [];
+  const held = [0, 0, 0, 0, 0], flash = [0, 0, 0, 0, 0];
+  for (const n of notes) {
+    const dt = t - n.t;
+    if (dt >= 0 && dt < .2) flash[n.lane] = Math.max(flash[n.lane], 1 - dt / .2);
+    if (n.sus && dt >= 0 && dt < n.sus) held[n.lane] = 1;
+  }
+  const zs = STRIKE, lw = z => G.w(z) / 5;
+  for (let l = 0; l < 5; l++) {
+    const x = G.x((l + .5) / 5, zs), y = G.y(zs), rx = lw(zs) * .43, ry = rx * .42;
+    const c = pal[l], on = Math.max(flash[l], held[l]);
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.beginPath(); ctx.ellipse(x + 2, y + ry * .45, rx, ry, 0, 0, 7); ctx.fill();
+    const rg = ctx.createLinearGradient(x, y - ry, x, y + ry);
+    rg.addColorStop(0, '#f4f5f8'); rg.addColorStop(1, '#8c8e98');
+    ctx.fillStyle = rg; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = rgb(mixc(c, [255, 255, 255], on * .4)); ctx.beginPath(); ctx.ellipse(x, y, rx * .86, ry * .82, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = rgb(mixc([8, 8, 10], c, on * .5)); ctx.beginPath(); ctx.ellipse(x, y + ry * .05, rx * .66, ry * .6, 0, 0, 7); ctx.fill();
+  }
+  // sustain tails, then the gems far to near
+  const vis = notes.filter(n => { const z = (n.t - t) * speed + zs; return z < 1.02 && (z > zs - .12 || (n.sus && t < n.t + n.sus)); });
+  vis.sort((a, b) => b.t - a.t);
+  for (const n of vis) {
+    if (!n.sus) continue;
+    const zh = Math.max(zs, (n.t - t) * speed + zs), ze = Math.min(1, (n.t + n.sus - t) * speed + zs);
+    if (ze <= zh) continue;
+    const c = B.star ? [120, 200, 255] : pal[n.lane], u = (n.lane + .5) / 5;
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = rgb(c, .85); ctx.shadowColor = rgb(c); ctx.shadowBlur = 14;
+    const wob = B.whammy ? t * 40 : 0;
+    ctx.beginPath();
+    for (let j = 0; j <= 16; j++) { const z = lerp(zh, ze, j / 16), ww = lw(z) * .09 * (1 + (B.whammy ? .5 * Math.sin(wob + j) : 0)); ctx.lineTo(G.x(u, z) - ww, G.y(z)); }
+    for (let j = 16; j >= 0; j--) { const z = lerp(zh, ze, j / 16), ww = lw(z) * .09 * (1 + (B.whammy ? .5 * Math.sin(wob + j) : 0)); ctx.lineTo(G.x(u, z) + ww, G.y(z)); }
+    ctx.fill(); ctx.restore();
+  }
+  for (const n of vis) {
+    const z = (n.t - t) * speed + zs; if (z < zs) continue;
+    const a = clamp((1 - z) / .25);
+    gem(G.x((n.lane + .5) / 5, z), G.y(z), lw(z) * .36, pal[n.lane], a, B.star);
+  }
+  for (let l = 0; l < 5; l++) {
+    const amt = Math.max(flash[l], held[l] * (.75 + .25 * Math.sin(t * 40 + l)));
+    flame(G.x((l + .5) / 5, zs), G.y(zs), lw(zs) * .42, t + l, B.star, amt);
+  }
+  // hit rating pop
+  if (B.rating !== false) {
+    const pops = notes.filter(n => n.i % 9 === 3 && t >= n.t && t < n.t + .55);
+    if (pops.length) {
+      const n = pops[pops.length - 1], p = (t - n.t) / .55;
+      const size = B.wNear * .085;
+      text(B.ratingText || 'PERFEITO', B.cx, G.y(.42), {
+        face: 'stencil', size, align: 'center', top: [255, 238, 150], bottom: [214, 150, 20], outline: [30, 20, 6],
+        scale: lerp(1.35, 1, eOut(clamp(p * 3))), alpha: clamp((1 - p) * 4), glow: [255, 190, 40], glowA: .45,
+      });
+    }
+  }
+  ctx.restore();
+  return G;
+}
+
+// HUD bits
+function multiplier(x, y, r, n, col = [40, 130, 230]) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.beginPath(); ctx.arc(x + 4, y + 7, r, 0, 7); ctx.fill();
+  ctx.fillStyle = '#d6d8e0'; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  const g = ctx.createRadialGradient(x - r * .3, y - r * .3, 1, x, y, r);
+  g.addColorStop(0, rgb(mixc(col, [255, 255, 255], .35))); g.addColorStop(1, rgb(shade(col, .7)));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * .86, 0, 7); ctx.fill();
+  ctx.restore();
+  stencil('x' + n, x, y + r * .3, r * .82, { align: 'center' });
+}
+function rockMeter(x, y, w, h, level) {
+  const n = 22, gap = 3, sh = (h - gap * (n - 1)) / n;
+  ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - 5, y - 5, w + 10, h + 10);
+  for (let i = 0; i < n; i++) {
+    const f = i / (n - 1), c = f < .33 ? [210, 30, 30] : f < .6 ? [230, 190, 30] : [40, 200, 70];
+    const lit = f <= level;
+    ctx.fillStyle = rgb(shade(c, lit ? 1 : .22));
+    ctx.fillRect(x, y + h - (i + 1) * sh - i * gap, w, sh);
+  }
+  const my = y + h - level * h;
+  ctx.fillStyle = '#e8e9ef'; ctx.beginPath(); ctx.moveTo(x - 10, my - 7); ctx.lineTo(x + w + 10, my); ctx.lineTo(x - 10, my + 7); ctx.fill();
+}
+function powerBar(x, y, w, h, fill, n = 12) {
+  const gap = 4, cw = (w - gap * (n - 1)) / n;
+  for (let i = 0; i < n; i++) {
+    const lit = (i + 1) / n <= fill + 1e-6;
+    ctx.fillStyle = lit ? '#4aa8ff' : 'rgba(30,40,56,.9)';
+    ctx.fillRect(x + i * (cw + gap), y, cw, h);
+    if (lit) { ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(x + i * (cw + gap), y, cw, h * .35); }
+  }
+}
+function buttonHint(x, y, letter, label, alpha = 1) {
+  ctx.save(); ctx.globalAlpha *= alpha;
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.strokeStyle = 'rgba(120,120,132,.6)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, 16, 0, 7); ctx.fill(); ctx.stroke();
+  body(letter, x, y + 7, 18, { align: 'center', top: INK.faint, shadow: false });
+  body(label, x + 32, y + 8, 22, { top: INK.faint, shadow: false });
+  ctx.restore();
+}
+
+// The scene heading used on every menu: stencil title and a strip of tape.
+function heading(t, title, sub, o = {}) {
+  const x = o.x ?? 96, y = o.y ?? 190, size = o.size ?? 132;
+  const p = seg(t, .05, .45), q = eOut(p);
+  const flick = t < .5 ? (h2(Math.floor(t * 30), 1, 91) > .35 ? 1 : .25) : 1;
+  const out = o.out ? 1 - eIn(seg(t, o.out, o.out + .4)) : 1;
+  ctx.save(); ctx.globalAlpha *= out;
+  stencil(title, x - (1 - q) * 120, y, size, { alpha: q * flick, top: [214, 216, 224], bottom: [96, 98, 108] });
+  if (sub) {
+    const w = measure(sub, 'marker', size * .36) + size * .8;
+    tapeLabel(sub, x + w / 2 - 14, y + size * .47, size * .36, t, .4, { angle: -1.5 });
+  }
+  ctx.restore();
+}
+// Fade from and to black, with a CRT roll at the cut.
+function frameInOut(t, dur) {
+  const a = Math.max(1 - seg(t, 0, .3), seg(t, dur - .35, dur));
+  if (a > 0) { ctx.fillStyle = `rgba(0,0,0,${a})`; ctx.fillRect(0, 0, W, H); }
+}
+function shake(t, t0, amp = 14) {
+  if (t < t0) return [0, 0];
+  const d = t - t0, e = Math.exp(-d * 11) * amp;
+  return [Math.sin(d * 90) * e, Math.cos(d * 73) * e];
+}
+
+// ================================================================= scenes ===
+const SCENES = [];
+const scene = (id, dur, fn) => SCENES.push({ id, dur, fn });
+
+// ---- 00 abertura ----------------------------------------------------------
+scene('00-abertura', 5.5, (t, f) => {
+  wall(t);
+  const [sx, sy] = [shake(t, .55, 18), shake(t, .95, 22), shake(t, 1.65, 12)].reduce((a, b) => [a[0] + b[0], a[1] + b[1]]);
+  ctx.save(); ctx.translate(sx, sy);
+  // the disc rolls in and spins
+  const cp = eOut(seg(t, .1, 1.1));
+  cd(lerp(2300, 1380, cp), 520, 330, t * 1.6 + cp * 6, 1);
+  // stars
+  const sp = eBack(seg(t, 1.9, 2.2)); if (sp > 0) star(1790, 150, 38 * sp, 12, [214, 176, 40], [120, 90, 10]);
+  const sp2 = eBack(seg(t, 2.05, 2.35)); if (sp2 > 0) star(70, 900, 30 * sp2, -8, [190, 30, 40], [90, 10, 16]);
+  // logo
+  const p1 = seg(t, .3, .55), p2 = seg(t, .7, .95);
+  if (p1 > 0) stencil('SWITCH', 110, 330, 235, { scale: lerp(1.8, 1, eOut(p1)), alpha: clamp(p1 * 2), glow: INK.crt, glowA: .5, glowBlur: 50, top: [245, 246, 252], bottom: [104, 108, 122] });
+  if (p2 > 0) stencil('HERO', 170, 560, 245, {
+    scale: lerp(1.8, 1, eOut(p2)), alpha: clamp(p2 * 2), top: [255, 176, 60], bottom: [214, 74, 14],
+    glow: [255, 50, 20], glowA: .75 + .15 * Math.sin(t * 9), glowBlur: 70, outline: [30, 8, 2] });
+  marker('burned mixtape vol. 3', 190, 650, 58, { top: [210, 212, 220], angle: -3, alpha: seg(t, 1.2, 1.5) });
+  marker('\\m/', 1000, 660, 60, { top: [200, 202, 210], angle: -8, alpha: seg(t, 2.4, 2.6) });
+  // version sticker
+  const vp = seg(t, 1.55, 1.85);
+  if (vp > 0) {
+    ctx.save(); ctx.translate(1380, 520); ctx.rotate((-8 + (1 - eBack(vp)) * 25) * Math.PI / 180);
+    const s = lerp(2.2, 1, eBack(vp)); ctx.scale(s, s); ctx.globalAlpha *= clamp(vp * 3);
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.beginPath(); ctx.arc(8, 14, 150, 0, 7); ctx.fill();
+    ctx.fillStyle = '#c81e28'; ctx.beginPath(); ctx.arc(0, 0, 150, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#f4f2ea'; ctx.lineWidth = 10; ctx.beginPath(); ctx.arc(0, 0, 134, 0, 7); ctx.stroke();
+    stencil('0.3', 0, 52, 150, { align: 'center', top: [255, 255, 255], bottom: [214, 214, 222] });
+    marker('versão', 0, -70, 40, { align: 'center', top: [250, 246, 236] });
+    ctx.restore();
+  }
+  // tagline tape
+  tapeLabel('o que há de novo', 520, 800, 64, t, 2.4, { angle: -2.5 });
+  body('Homebrew para Nintendo Switch  ·  Clone Hero-style  ·  SDL2', 110, 950, 28, { top: INK.dim, alpha: seg(t, 2.9, 3.3) });
+  ctx.restore();
+  frameInOut(t, 5.5);
+});
+
+// ---- 01 multijogador ------------------------------------------------------
+const MP_PLAYERS = [
+  { theme: 'FOGO DO INFERNO', pal: 'SANGUE', seed: 11, mult: 2, col: [200, 30, 36] },
+  { theme: 'SYNTHWAVE', pal: 'VAPORWAVE', seed: 22, mult: 2, col: [200, 30, 36] },
+  { theme: 'SONHO PASTEL', pal: 'PASTEL', seed: 33, mult: 1, col: [200, 30, 36] },
+  { theme: 'CONGELADO', pal: 'INFERNO', seed: 44, mult: 1, col: [200, 30, 36] },
+];
+const MP_CHARTS = MP_PLAYERS.map(p => makeChart(p.seed, .6, 30, { steps: [.25, .25, .5, .25, .125, .375] }));
+scene('01-multijogador', 9, (t, f) => {
+  wall(t);
+  const song = t * 1 + 2;
+  // layouts: 1 board, then halves, then quadrants
+  const a = eIO(seg(t, 2.4, 3.2)), b = eIO(seg(t, 4.3, 5.1));
+  const full = [0, 0, W, H], halves = [[0, 0, W / 2, H], [W / 2, 0, W / 2, H]], quads = [[0, 0, W / 2, H / 2], [W / 2, 0, W / 2, H / 2], [0, H / 2, W / 2, H / 2], [W / 2, H / 2, W / 2, H / 2]];
+  const L = (r1, r2, k) => r1.map((v, i) => lerp(v, r2[i], k));
+  const rects = [
+    L(L(full, halves[0], a), quads[0], b),
+    L(L([W, 0, W / 2, H], halves[1], a), quads[1], b),
+    L([0, H, W / 2, H / 2], quads[2], b),
+    L([W / 2, H, W / 2, H / 2], quads[3], b),
+  ];
+  const vis = [1, a, b, b];
+  const bp = seg(t, 1.3, 2.0); // boards come up after the heading
+  for (let i = 0; i < 4; i++) {
+    if (vis[i] <= 0 || bp <= 0) continue;
+    const [rx, ry, rw, rh] = rects[i], P = MP_PLAYERS[i];
+    const th = THEME[i === 0 ? (a < .5 ? 'LIXA' : P.theme) : P.theme];
+    const pal = PAL[i === 0 && a < .5 ? 'CLÁSSICO' : P.pal];
+    const tall = rh / H, wide = rw / W;
+    const wNear = Math.min(rw * .62, rh * 1.05), cx = rx + rw * .46;
+    const yNear = ry + rh * (.96 - (1 - eOut(bp)) * .3), yFar = ry + rh * (tall > .6 ? .16 : .12);
+    ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip();
+    ctx.globalAlpha = eOut(bp) * clamp(vis[i] * 1.5);
+    drawBoard({ cx, yNear, yFar, wNear, wFar: wNear * .56, theme: th, time: song + i * .13, notes: MP_CHARTS[i], palette: pal, speed: .5 });
+    // HUD
+    const hs = Math.max(.55, Math.min(1, rh / 1080 * 1.6)), hy = ry + (ry < 10 && a > .5 ? 60 : 20);
+    const score = Math.floor((song - .6) * [212, 236, 160, 176][i]);
+    body('P' + (i + 1), rx + 40, hy + 70 * hs, 30 * hs, { top: INK.dim });
+    stencil(String(Math.max(0, score)), rx + 40, hy + 130 * hs, 58 * hs);
+    marker(`${Math.floor(song * [3, 4, 2, 2.5][i]) % 40 + 4} sequência`, rx + 40, hy + 170 * hs, 24 * hs, { top: INK.acid });
+    multiplier(cx + wNear * .55 + 20 * hs, ry + rh * .15, 42 * hs, P.mult, P.col);
+    rockMeter(cx + wNear * .6 + 34 * hs, ry + rh * .36, 22 * hs, rh * .5, .55 + .25 * Math.sin(song * .5 + i));
+    ctx.restore();
+    if (i > 0 || a > 0) { ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.lineWidth = 6; ctx.strokeRect(rx, ry, rw, rh); }
+  }
+  // song name across the top once split
+  const sp = seg(t, 3.0, 3.4);
+  if (sp > 0) {
+    ctx.save(); ctx.globalAlpha = sp;
+    tape(W / 2, 46, 520, 74, -1);
+    marker('First Light', W / 2, 64, 44, { align: 'center' });
+    ctx.restore();
+  }
+  // heading first, then the callout at the end
+  if (t < 2.6) heading(t, 'MULTIJOGADOR', 'tela dividida', { out: 2.1 });
+  const cp = seg(t, 6.2, 6.6);
+  if (cp > 0) {
+    ctx.fillStyle = `rgba(0,0,0,${.72 * cp})`; ctx.fillRect(0, 0, W, H);
+    ctx.save(); const [kx, ky] = shake(t, 6.35, 16); ctx.translate(kx, ky);
+    stencil('ATÉ 4 JOGADORES', W / 2, 520, 150, { align: 'center', scale: lerp(1.6, 1, eOut(cp)), alpha: cp, glow: INK.blood, glowA: .7, glowBlur: 60 });
+    tapeLabel('cada um com sua pista, cores e dificuldade', W / 2, 675, 50, t, 6.7, { angle: -1.5 });
+    body('no dock  ·  contagem 3-2-1  ·  ranking no fim da música', W / 2, 800, 32, { align: 'center', top: INK.dim, alpha: seg(t, 7.1, 7.5) });
+    ctx.restore();
+  }
+  frameInOut(t, 9);
+});
+
+// ---- 02 pratica -----------------------------------------------------------
+const SECTIONS = [['Intro', '0:00'], ['Verso 1', '0:06'], ['Refrão', '0:12'], ['Solo de guitarra', '0:17'], ['Ponte', '0:22'], ['Final', '0:27']];
+const PR_CHART = makeChart(5, 0, 60, { steps: [.2, .2, .4, .2, .3] });
+scene('02-pratica', 8, (t, f) => {
+  wall(t);
+  heading(t, 'PRÁTICA', 'repita um trecho até acertar');
+  // disc + cover on the left, then the section list
+  const pp = eOut(seg(t, .5, 1.0));
+  panel(110 - (1 - pp) * 200, 340, 760, 620, pp);
+  ctx.save(); ctx.globalAlpha *= pp;
+  const px = 110 - (1 - pp) * 200, py = 340;
+  const choosingEnd = t > 2.3;
+  body(choosingEnd ? 'Escolha onde a repetição termina.' : 'Escolha onde a repetição começa.', px + 44, py + 62, 26, { top: INK.dim });
+  const cur = t < 1.5 ? 0 : t < 2.3 ? 1 : t < 2.7 ? 2 : 3;
+  const start = t > 2.3 ? 1 : -1, end = t > 3.2 ? 3 : -1;
+  SECTIONS.forEach(([name, time], i) => {
+    const y = py + 120 + i * 74;
+    const inRange = start >= 0 && i >= start && i <= Math.max(cur, end >= 0 ? end : cur);
+    if (inRange) { ctx.fillStyle = 'rgba(110,160,50,.3)'; ctx.fillRect(px + 30, y - 32, 700, 64); }
+    if (i === cur) { ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(px + 30, y - 32, 700, 64); }
+    ctx.fillStyle = inRange || i === cur ? '#a8ff3e' : '#2a2c30';
+    if (inRange || i === cur) { ctx.shadowColor = '#a8ff3e'; ctx.shadowBlur = 14; }
+    ctx.beginPath(); ctx.arc(px + 62, y, 7, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+    body(name, px + 92, y + 11, 34, { top: i === cur ? INK.white : [200, 200, 210] });
+    body(time, px + 700, y + 10, 26, { top: INK.dim, align: 'right' });
+    if (i === start) marker('INÍCIO', px + 560, y + 10, 26, { top: INK.acid, align: 'right' });
+    if (i === end) marker('FIM', px + 560, y + 10, 26, { top: INK.acid, align: 'right' });
+  });
+  body(`duração da repetição ${end >= 0 ? '0:16' : '0:' + String(6 * Math.max(1, cur)).padStart(2, '0')}`, px + 44, py + 590, 24, { top: INK.dim, alpha: start >= 0 ? 1 : 0 });
+  ctx.restore();
+  // the loop running on the right
+  const bp = eOut(seg(t, 3.4, 4.0));
+  if (bp > 0) {
+    const loopLen = 1.7, lt = Math.max(0, t - 4.4), lap = Math.floor(lt / loopLen), inLap = lt % loopLen;
+    const song = t < 4.4 ? 0 : 6 + inLap * 2.5;
+    ctx.save(); ctx.globalAlpha = bp;
+    drawBoard({ cx: 1390, yNear: 1040 + (1 - bp) * 300, yFar: 330, wNear: 760, wFar: 420, theme: THEME['JACARANDÁ'], time: song, notes: t < 4.4 ? [] : PR_CHART, speed: .55 });
+    // count-in
+    if (t > 3.6 && t < 4.4) {
+      const n = 3 - Math.floor((t - 3.6) / .27), p = ((t - 3.6) / .27) % 1;
+      stencil(String(Math.max(1, n)), 1390, 720, 200, { align: 'center', scale: lerp(1.5, 1, eOut(p)), alpha: 1 - p * .7, glow: INK.blood, glowA: .8 });
+    }
+    // loop strip
+    const lx = 1030, ly = 290, lw = 720;
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(lx, ly, lw, 14);
+    ctx.fillStyle = 'rgba(168,255,62,.55)'; ctx.fillRect(lx + lw * .2, ly, lw * .53, 14);
+    const ph = t < 4.4 ? .2 : .2 + .53 * inLap / loopLen;
+    ctx.fillStyle = '#fff'; ctx.fillRect(lx + lw * ph - 2, ly - 8, 4, 30);
+    body('volta ' + (lap + 1), lx, ly - 22, 30, { top: INK.white });
+    const acc = [92, 96, 98, 100][Math.min(3, lap)];
+    if (lap > 0) marker(`última ${[91, 95, 98][Math.min(2, lap - 1)]}%`, lx + lw, ly - 22, 30, { top: INK.acid, align: 'right' });
+    if (t > 4.4 && inLap < .2 && lap > 0) { ctx.fillStyle = `rgba(255,255,255,${.25 * (1 - inLap / .2)})`; ctx.fillRect(1000, 300, 800, 760); }
+    ctx.restore();
+  }
+  body('sem falhas  ·  sem recordes  ·  reinício instantâneo', 110, 1030, 28, { top: INK.dim, alpha: seg(t, 5, 5.4) });
+  frameInOut(t, 8);
+});
+
+// ---- 03 solos e secoes ----------------------------------------------------
+const SOLO_CHART = makeChart(9, 0, 40, { steps: [.125, .125, .25, .125], susRate: .97, chordRate: .95 });
+scene('03-solos', 8, (t, f) => {
+  wall(t, [60, 120, 255]);
+  heading(t, 'SOLOS', 'e seções');
+  // results: sections view
+  const pp = eOut(seg(t, .5, 1.0));
+  const px = 110 - (1 - pp) * 200, py = 340;
+  panel(px, py, 700, 600, pp);
+  ctx.save(); ctx.globalAlpha *= pp;
+  stencil('SEÇÕES', px + 44, py + 86, 54);
+  const acc = [100, 98, 91, 74, 96, 100];
+  SECTIONS.forEach(([name], i) => {
+    const y = py + 150 + i * 70, p = eOut(seg(t, .9 + i * .12, 1.6 + i * .12));
+    body(name, px + 44, y + 10, 28, { top: i === 3 ? INK.white : [200, 200, 210] });
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(px + 330, y - 12, 240, 24);
+    const c = acc[i] >= 95 ? [110, 220, 60] : acc[i] >= 85 ? [230, 190, 30] : [220, 44, 44];
+    ctx.fillStyle = rgb(c); ctx.fillRect(px + 330, y - 12, 240 * acc[i] / 100 * p, 24);
+    body(Math.round(acc[i] * p) + '%', px + 660, y + 10, 26, { top: INK.dim, align: 'right' });
+    if (i === 3 && p >= 1) marker('mais fraca', px + 470, y + 50, 26, { top: [255, 110, 110], angle: -4, alpha: seg(t, 2.4, 2.6) });
+  });
+  ctx.restore();
+  // the solo on the right
+  const bp = eOut(seg(t, 1.0, 1.6));
+  const song = 1 + t * 1.0, soloOn = eOut(seg(t, 2.0, 2.4)) * (1 - seg(t, 6.0, 6.3));
+  ctx.save(); ctx.globalAlpha = bp;
+  drawBoard({ cx: 1350, yNear: 1040 + (1 - bp) * 300, yFar: 300, wNear: 780, wFar: 430, theme: THEME['LIXA'], time: song, notes: SOLO_CHART, speed: .6, solo: soloOn, rating: t < 5.9 });
+  // live solo counter
+  const total = 19, hit = Math.min(total, Math.floor(seg(t, 2.2, 5.9) * total));
+  if (soloOn > 0 && t < 6.0) body(`SOLO  ${hit} / ${total}  ${hit ? 100 : 100}%`, 1350, 270, 40, { align: 'center', top: [210, 230, 255], glow: [40, 120, 255], glowA: .6 * soloOn, alpha: soloOn });
+  ctx.restore();
+  const cp = seg(t, 6.0, 6.3);
+  if (cp > 0) {
+    const [kx, ky] = shake(t, 6.1, 14);
+    stencil('SOLO PERFEITO!', 1350 + kx, 640 + ky, 120, { align: 'center', scale: lerp(1.7, 1, eOut(cp)), alpha: cp, glow: INK.blood, glowA: .85, glowBlur: 50 });
+    stencil('+1.900', 1350 + kx, 760 + ky, 70, { align: 'center', alpha: seg(t, 6.3, 6.5), top: [190, 255, 120], bottom: [90, 190, 40], glow: INK.acid, glowA: .5 });
+  }
+  body('solos e seções lidos de .chart e MIDI  ·  bônus de 100 por nota', 110, 1030, 28, { top: INK.dim, alpha: seg(t, 4.5, 4.9) });
+  frameInOut(t, 8);
+});
+
+// ---- 04 personalizar ------------------------------------------------------
+const CU_CHART = makeChart(3, 0, 60, { steps: [.3, .3, .6, .3, .15] });
+scene('04-personalizar', 9, (t, f) => {
+  wall(t);
+  heading(t, 'PERSONALIZAR', '13 pistas  ·  24 paletas');
+  const cyc = seg(t, 1.3, 7.6);
+  const hi = Math.min(12, Math.floor(cyc * 13)), pi = Math.min(23, Math.floor(cyc * 24));
+  const hwChange = (cyc * 13) % 1, palChange = (cyc * 24) % 1;
+  const pp = eOut(seg(t, .5, 1.0));
+  const px = 90 - (1 - pp) * 200, py = 360;
+  panel(px, py, 1740, 620, pp);
+  ctx.save(); ctx.globalAlpha *= pp;
+  // rows
+  const row = (y, label, n, of, name, sel, bump) => {
+    if (sel) { ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(px + 30, y - 44, 930, 88); }
+    ctx.fillStyle = sel ? '#a8ff3e' : '#2a2c30'; if (sel) { ctx.shadowColor = '#a8ff3e'; ctx.shadowBlur = 14; }
+    ctx.beginPath(); ctx.arc(px + 64, y, 8, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+    body(label, px + 96, y + 13, 40, { top: sel ? INK.white : [190, 190, 200] });
+    body(`${n} / ${of}`, px + 96 + measure(label, 'body', 40) + 24, y + 11, 26, { top: INK.faint });
+    const s = 1 + (1 - clamp(bump * 5)) * .14;
+    marker(name, px + 760, y + 16, 44, { align: 'center', top: sel ? INK.acid : INK.white, scale: s });
+    const nw = measure(name, 'marker', 44) * s / 2 + 22;
+    body('<', px + 760 - nw, y + 12, 34, { top: sel ? INK.acid : INK.faint, align: 'right' });
+    body('>', px + 760 + nw, y + 12, 34, { top: sel ? INK.acid : INK.faint });
+  };
+  row(py + 90, 'Pista', hi + 1, 13, HW[hi].name, true, hwChange);
+  row(py + 200, 'Cores das notas', pi + 1, 24, PALETTES[pi][0], true, palChange);
+  // palette swatches
+  PALETTES[pi][1].slice(0, 5).forEach((c, i) => gem(px + 520 + i * 70, py + 300, 26, c, 1));
+  // big counters
+  stencil(String(hi + 1).padStart(2, '0'), px + 110, py + 500, 150, { top: [245, 245, 250], bottom: [110, 114, 128] });
+  body('pistas', px + 110, py + 548, 30, { top: INK.dim });
+  stencil(String(pi + 1).padStart(2, '0'), px + 420, py + 500, 150, { top: [168, 255, 62], bottom: [70, 150, 20] });
+  body('paletas de notas', px + 420, py + 548, 30, { top: INK.dim });
+  ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.fillRect(px + 30, py + 575, 930, 2);
+  // preview
+  ctx.fillStyle = '#060608'; ctx.fillRect(px + 1000, py + 30, 710, 560);
+  const th = HW[hi];
+  drawBoard({ cx: px + 1355, yNear: py + 560, yFar: py + 110, wNear: 620, wFar: 360, theme: th, time: t * .9, notes: CU_CHART, palette: PALETTES[pi][1], speed: .5, rating: false, clip: [px + 1000, py + 30, 710, 560] });
+  if (hwChange < .12 && cyc > 0 && cyc < 1) { ctx.fillStyle = `rgba(255,255,255,${.35 * (1 - hwChange / .12)})`; ctx.fillRect(px + 1000, py + 30, 710, 560); }
+  ctx.restore();
+  body('prévia ao vivo  ·  no multijogador cada um escolhe a sua', 90, 1040, 28, { top: INK.dim, alpha: seg(t, 3, 3.4) });
+  frameInOut(t, 9);
+});
+
+// ---- 05 idioma ------------------------------------------------------------
+const PAIRS = [['QUICKPLAY', 'JOGO RÁPIDO'], ['PRACTICE', 'PRÁTICA'], ['PERFECT', 'PERFEITO'], ['PERFECT SOLO!', 'SOLO PERFEITO!'], ['MULTIPLAYER', 'MULTIJOGADOR']];
+const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÂÊÔÃÕÇ!';
+function scramble(from, to, p, seed) {
+  if (p <= 0) return from; if (p >= 1) return to;
+  const n = Math.max(from.length, to.length); let s = '';
+  for (let i = 0; i < n; i++) {
+    const k = i / n;
+    if (p > k * .6 + .4) s += to[i] || '';
+    else if (p > k * .6) s += to[i] === ' ' ? ' ' : GLYPHS[(h2(i, Math.floor(p * 40), seed) * GLYPHS.length) | 0];
+    else s += from[i] || '';
+  }
+  return s;
+}
+scene('05-idioma', 6.5, (t, f) => {
+  wall(t);
+  heading(t, 'IDIOMA', 'agora em português');
+  // first start picker
+  const pp = eOut(seg(t, .5, 1.0));
+  const px = 110 - (1 - pp) * 200, py = 380;
+  panel(px, py, 640, 420, pp);
+  ctx.save(); ctx.globalAlpha *= pp;
+  body('inglês ou português', px + 44, py + 70, 28, { top: INK.dim });
+  const pick = t > 1.7 ? 1 : 0, confirmed = t > 2.3;
+  ['English', 'Português'].forEach((s, i) => {
+    const y = py + 170 + i * 110, sel = i === pick;
+    if (sel) { ctx.fillStyle = confirmed ? 'rgba(110,160,50,.35)' : 'rgba(0,0,0,.4)'; ctx.fillRect(px + 30, y - 50, 580, 96); }
+    if (sel) marker('>', px + 60, y + 18, 50, { top: INK.acid });
+    stencil(s, px + 120, y + 22, 64, sel ? {} : { top: [120, 122, 132], bottom: [70, 72, 80] });
+  });
+  if (confirmed) { const k = seg(t, 2.3, 2.6); ctx.fillStyle = `rgba(168,255,62,${.3 * (1 - k)})`; ctx.fillRect(px, py, 640, 420); }
+  ctx.restore();
+  // strings flip to Portuguese
+  PAIRS.forEach(([en, pt], i) => {
+    const y = 420 + i * 120, a = seg(t, 1.0 + i * .1, 1.3 + i * .1);
+    const p = seg(t, 2.5 + i * .18, 3.3 + i * .18), s = scramble(en, pt, p, i);
+    const fin = p >= 1;
+    stencil(s, 900, y, 84, { alpha: a, top: fin ? [255, 255, 255] : [210, 212, 220], bottom: fin ? [150, 154, 168] : INK.steel, glow: fin ? INK.crt : null, glowA: .35 * (1 - seg(t, 3.3 + i * .18, 4.2 + i * .18)) });
+  });
+  tapeLabel('ç ã é ô — acentos de verdade', 1300, 1000, 44, t, 4.2, { angle: -2 });
+  frameInOut(t, 6.5);
+});
+
+// ---- 06 desempenho --------------------------------------------------------
+scene('06-desempenho', 8, (t, f) => {
+  wall(t);
+  heading(t, 'DESEMPENHO', 'mais leve, mais rápido');
+  const rows = [
+    ['draw calls · 4 jogadores', 786, 146],
+    ['draw calls · 1 jogador', 262, 49],
+    ['ler 165 pastas de músicas', 2499, 841],
+    ['carregar uma música', 297, 11],
+  ];
+  const pp = eOut(seg(t, .5, 1.0));
+  const px = 90 - (1 - pp) * 200, py = 350;
+  panel(px, py, 1740, 600, pp);
+  ctx.save(); ctx.globalAlpha *= pp;
+  const segs = 40, bw = 1000, bx = px + 520;
+  rows.forEach(([label, before, after], i) => {
+    const y = py + 100 + i * 130, a = seg(t, .9 + i * .15, 1.2 + i * .15);
+    const shrink = eIO(seg(t, 2.3 + i * .35, 3.3 + i * .35));
+    const val = Math.round(lerp(before, after, shrink));
+    const frac = lerp(1, after / before, shrink);
+    ctx.save(); ctx.globalAlpha *= a;
+    body(label, px + 50, y + 10, 28, { top: [200, 200, 210] });
+    if (i === 0) body('por quadro', px + 50, y + 42, 20, { top: INK.faint });
+    const cw = bw / segs - 4;
+    for (let k = 0; k < segs; k++) {
+      const on = (k + 1) / segs <= frac * a + 1e-6;
+      const c = shrink > .02 ? mixc([220, 44, 44], [110, 230, 60], shrink) : [220, 44, 44];
+      ctx.fillStyle = rgb(on ? c : [30, 32, 36]);
+      ctx.fillRect(bx + k * (bw / segs), y - 20, cw, 40);
+      if (on) { ctx.fillStyle = 'rgba(255,255,255,.2)'; ctx.fillRect(bx + k * (bw / segs), y - 20, cw, 12); }
+    }
+    stencil(val.toLocaleString('pt-BR'), px + 1700, y + 22, 58, { align: 'right' });
+    body('antes ' + before.toLocaleString('pt-BR'), px + 1700, y + 52, 20, { align: 'right', top: INK.faint, alpha: shrink });
+    const pct = Math.round((1 - after / before) * 100);
+    if (shrink >= 1) {
+      const sp = eBack(seg(t, 3.3 + i * .35, 3.55 + i * .35));
+      ctx.save(); ctx.translate(bx + bw * after / before + 110, y); ctx.rotate(-.12); ctx.scale(sp, sp);
+      tape(0, 0, 170, 62, 0); marker(`-${pct}%`, 0, 16, 40, { align: 'center', top: [170, 20, 30] });
+      ctx.restore();
+    }
+    ctx.restore();
+  });
+  ctx.restore();
+  body('cache da biblioteca  ·  gemas pré-renderizadas  ·  trabalho nos núcleos livres', 90, 1030, 28, { top: INK.dim, alpha: seg(t, 5, 5.4) });
+  frameInOut(t, 8);
+});
+
+// ---- 07 e mais ------------------------------------------------------------
+const WH_CHART = [{ t: 0.4, lane: 2, sus: 60, i: 0 }];
+scene('07-e-mais', 9, (t, f) => {
+  wall(t);
+  heading(t, 'E MAIS', 'whammy, vibração e fila de downloads');
+  const cards = [[80, 'WHAMMY'], [690, 'VIBRAÇÃO'], [1300, 'FILA']];
+  cards.forEach(([x, title], i) => {
+    const t0 = .7 + i * .35, p = eBack(seg(t, t0, t0 + .35));
+    if (p <= 0) return;
+    const y = 360;
+    ctx.save(); ctx.translate(x + 270, y + 310); ctx.rotate((1 - p) * .3 * (i - 1)); ctx.scale(lerp(1.4, 1, p), lerp(1.4, 1, p)); ctx.translate(-x - 270, -y - 310);
+    ctx.globalAlpha *= clamp(seg(t, t0, t0 + .35) * 3);
+    panel(x, y, 540, 620);
+    stencil(title, x + 270, y + 100, 64, { align: 'center' });
+    if (i === 0) {
+      // a star sustain being whammied, filling star power
+      ctx.save(); ctx.beginPath(); ctx.rect(x + 20, y + 130, 500, 360); ctx.clip();
+      drawBoard({ cx: x + 270, yNear: y + 470, yFar: y + 150, wNear: 380, wFar: 220, theme: THEME['LIXA'], time: t, notes: WH_CHART, star: true, whammy: t > 2.0, speed: .5, rating: false });
+      ctx.restore();
+      powerBar(x + 60, y + 510, 420, 22, Math.floor(clamp(seg(t, 2.0, 6.5) * 1.02) * 12) / 12);
+      body('enche o star power nos sustains', x + 270, y + 580, 24, { align: 'center', top: INK.dim });
+    } else if (i === 1) {
+      // a controller buzzing on a miss, pulse on star power
+      const buzz = (t % 1.6) < .35 && t > 2.2 ? Math.sin(t * 90) * 7 : 0;
+      ctx.save(); ctx.translate(x + 270 + buzz, y + 320);
+      ctx.fillStyle = '#1b1c20'; ctx.strokeStyle = '#5a5c66'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.roundRect(-170, -80, 340, 160, 70); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#e8e9ef'; for (const [bx, by] of [[90, -26], [120, 0], [90, 26], [60, 0]]) { ctx.beginPath(); ctx.arc(bx, by, 11, 0, 7); ctx.fill(); }
+      ctx.fillStyle = '#3a3c44'; ctx.beginPath(); ctx.arc(-90, -10, 30, 0, 7); ctx.fill();
+      ctx.fillStyle = '#e8e9ef'; ctx.fillRect(-118, 40, 56, 14); ctx.fillRect(-97, 19, 14, 56);
+      ctx.restore();
+      if (buzz) {
+        ctx.strokeStyle = 'rgba(255,90,90,.8)'; ctx.lineWidth = 4;
+        for (const s of [-1, 1]) for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(x + 270, y + 320, 200 + k * 22, s > 0 ? -.4 : Math.PI - .4, s > 0 ? .4 : Math.PI + .4); ctx.stroke(); }
+      }
+      marker('bzzz!', x + 270, y + 175, 40, { align: 'center', top: [255, 110, 110], alpha: buzz ? 1 : 0, angle: -6 });
+      body('ao errar, no star power e no fim do solo', x + 270, y + 520, 22, { align: 'center', top: INK.dim });
+      body('Opções › Jogabilidade › Vibração', x + 270, y + 580, 22, { align: 'center', top: INK.dim });
+    } else {
+      // download queue
+      const songs = [['Cherub Rock', 1], ['Through the Fire', .99], ['Holiday', .7], ['Master of Puppets', .25]];
+      songs.forEach(([name, spd], k) => {
+        const yy = y + 190 + k * 86;
+        const prog = clamp(seg(t, 1.8 + k * .9, 3.2 + k * 1.0) * spd * 1.02);
+        ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(x + 30, yy - 30, 480, 70);
+        body(name, x + 50, yy, 24, { top: INK.white });
+        ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x + 50, yy + 14, 330, 10);
+        ctx.fillStyle = prog >= 1 ? '#6ee03c' : '#4aa8ff'; ctx.fillRect(x + 50, yy + 14, 330 * prog, 10);
+        marker(prog >= 1 ? 'pronta' : prog > 0 ? Math.round(prog * 100) + '%' : 'na fila #' + (k + 1), x + 490, yy + 22, 22, { align: 'right', top: prog >= 1 ? INK.acid : INK.dim });
+      });
+      body('B sai e a fila continua baixando', x + 270, y + 580, 22, { align: 'center', top: INK.dim });
+    }
+    ctx.restore();
+  });
+  frameInOut(t, 9);
+});
+
+// ---- 08 encerramento ------------------------------------------------------
+scene('08-encerramento', 6, (t, f) => {
+  wall(t);
+  const [kx, ky] = shake(t, .55, 18);
+  ctx.save(); ctx.translate(kx, ky);
+  cd(1420, 540, 360, t * 1.4, eOut(seg(t, .0, .6)));
+  const p1 = seg(t, .25, .5), p2 = seg(t, .45, .7);
+  if (p1 > 0) stencil('SWITCH', 110, 360, 210, { scale: lerp(1.6, 1, eOut(p1)), alpha: clamp(p1 * 2), glow: INK.crt, glowA: .5, glowBlur: 50, top: [245, 246, 252], bottom: [104, 108, 122] });
+  if (p2 > 0) stencil('HERO', 160, 570, 220, { scale: lerp(1.6, 1, eOut(p2)), alpha: clamp(p2 * 2), top: [255, 176, 60], bottom: [214, 74, 14], glow: [255, 50, 20], glowA: .8, glowBlur: 70, outline: [30, 8, 2] });
+  tapeLabel('0.3 já disponível', 470, 700, 70, t, 1.0, { angle: -2 });
+  body('copie release/switch-hero para sd:/switch/', 110, 850, 32, { top: INK.dim, alpha: seg(t, 1.6, 2.0) });
+  body('github.com/r-drg/switch-hero', 110, 910, 40, { top: INK.white, alpha: seg(t, 1.9, 2.3) });
+  const sp = eBack(seg(t, 2.2, 2.5)); if (sp > 0) star(1780, 170, 40 * sp, 12, [214, 176, 40], [120, 90, 10]);
+  marker('\\m/', 950, 470, 70, { top: [200, 202, 210], angle: -8, alpha: seg(t, 2.4, 2.6) });
+  ctx.restore();
+  frameInOut(t, 6);
+});
+
+// ================================================================ driver ===
+function renderFrame(id, t) {
+  const S = SCENES.find(s => s.id === id);
+  const frame = Math.round(t * FPS) + SCENES.indexOf(S) * 10000;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  S.fn(t, frame);
+  grade(frame);
+}
+window.SCENES = SCENES.map(s => ({ id: s.id, dur: s.dur }));
+window.renderFrame = renderFrame;
+window.ready = (async () => {
+  await Promise.all(['Stencil', 'Marker', 'Body'].map(f => document.fonts.load(`40px ${f}`, 'AÉçã')));
+  buildTextures();
+  const q = new URLSearchParams(location.search);
+  if (q.has('scene')) renderFrame(q.get('scene'), parseFloat(q.get('t') || '2'));
+  else {
+    const total = SCENES.reduce((a, s) => a + s.dur, 0), t0 = performance.now();
+    const loop = () => {
+      let t = ((performance.now() - t0) / 1000) % total;
+      for (const s of SCENES) { if (t < s.dur) { renderFrame(s.id, t); break; } t -= s.dur; }
+      requestAnimationFrame(loop);
+    };
+    if (q.has('play') || !navigator.webdriver) loop();
+  }
+  return true;
+})();
+</script>
+</body>
+</html>

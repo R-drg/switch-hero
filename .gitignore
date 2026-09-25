@@ -14,3 +14,6 @@ release/switch-hero/songs/*
 !release/switch-hero/songs/.gitkeep
 !release/switch-hero/songs/First-Light/
 release/*.zip
+
+# Rendered promo videos; promo/*/render.mjs makes them again.
+promo/*/out/
