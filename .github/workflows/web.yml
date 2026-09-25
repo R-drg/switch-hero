@@ -1,0 +1,54 @@
+# Builds the browser version on every push and pull request, and publishes it
+# to GitHub Pages from main. Publishing needs Settings -> Pages -> Source set to
+# "GitHub Actions" once.
+name: Web build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+          "$HOME/emsdk/emsdk" install 6.0.10
+          "$HOME/emsdk/emsdk" activate 6.0.10
+      - name: Build
+        run: |
+          source "$HOME/emsdk/emsdk_env.sh"
+          bash tools/build-web.sh
+      - name: Collect the site
+        run: |
+          mkdir site
+          cp build-web/switch-hero.html build-web/switch-hero.js build-web/switch-hero.wasm \
+             build-web/switch-hero.data build-web/coi-sw.js site/
+          cp -r build-web/fonts site/
+          cp site/switch-hero.html site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
