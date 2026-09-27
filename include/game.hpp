@@ -221,9 +221,43 @@ struct Session {
             // and a stray finger can be lifted to correct the chord. Frets held by a
             // running sustain are not part of the shape.
             return changed && (held & n.mask) == n.mask && (held & uint8_t(~(n.mask | sustained))) == 0;
-        // Single notes stay forgiving: a fret still held from the previous note in
-        // a fast run does not spoil the next hit.
-        return (rising & n.mask) && (held & n.mask) == n.mask;
+        // Single notes stay forgiving: lower frets may remain held underneath the
+        // target fret, just like anchoring on a guitar controller.  In gamepad mode
+        // this also recreates the classic Guitar Hero controller behaviour:
+        //
+        //   * pressing the target fret itself hits the note as before;
+        //   * while the target fret is already held, pressing any lower fret can
+        //     re-strike that same single note (useful for fast repeated notes);
+        //   * HOPO/tap notes may be completed by any fret-state change that leaves
+        //     the target as the highest held fret.  That makes a release work as a
+        //     pull-off: hold Green, press Red, release Red -> Green can hit again.
+        //
+        // Higher frets are deliberately rejected for the two classic behaviours,
+        // and chords keep using the exact-shape path above.
+        const bool targetHeld = (held & n.mask) == n.mask;
+        if (!targetHeld)
+            return false;
+
+        // Normal press-to-hit behaviour: pressing the note's own fret.
+        if (rising & n.mask)
+            return true;
+
+        // With a single-note bit mask (1,2,4,8,16), all lower frets are exactly
+        // the bits below it.  The numeric comparison rejects any higher fret.
+        const uint8_t lowerFrets = uint8_t(n.mask - 1);
+        const bool targetIsHighest = held < (n.mask << 1);
+
+        // Classic gamepad repeated-note helper.  Example: keep Yellow held and
+        // alternate Green/Red presses; each new lower-fret press can re-strike Yellow.
+        if (targetIsHighest && (rising & lowerFrets))
+            return true;
+
+        // HOPO/tap pull-offs in gamepad mode.  `changed` is true on both presses
+        // and releases, so releasing a higher fret can reveal the lower target that
+        // was already being held.  HOPO still requires an active combo, matching
+        // the existing guitar-mode rule; Tap notes do not.
+        const bool hammer = n.kind == Kind::Tap || (n.kind == Kind::Hopo && combo > 0);
+        return hammer && changed && targetIsHighest;
     }
     // Press-to-hit judgement. Every new press takes the note it fits that lies
     // *nearest in time*, so frets still held from the previous note in a fast run
@@ -263,11 +297,18 @@ struct Session {
                 settle(j, false, time);
             settle(best, true, time);
             next = best + 1;
-            // One press, one note.
-            if (n.mask == 32)
+            // One physical press, one note.  Normally the note consumes its own
+            // rising fret.  A classic-gamepad re-strike is different: the target
+            // fret was already held and a *lower* fret caused the hit, so consume
+            // those lower rising bits instead.  Otherwise that same press could
+            // leak through the loop and accidentally hit a second note.
+            if (n.mask == 32) {
                 open = false, rising = 0;
-            else
+            } else if ((n.mask & (n.mask - 1)) == 0 && !(rising & n.mask)) {
+                rising &= uint8_t(~uint8_t(n.mask - 1));
+            } else {
                 rising &= uint8_t(~n.mask);
+            }
             changed = false;
         }
     }
