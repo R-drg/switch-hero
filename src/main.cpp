@@ -3508,7 +3508,7 @@ int main(int argc, char **argv) {
                 menu(640, 390, 74, names, languageRow, ui, 420, 36);
                 auto sub = body(18, ink::dim);
                 sub.align = Align::Center;
-                text(640, 560, tr("you can change it later in options"), sub);
+                text(640, 600, tr("you can change it later in options"), sub);
                 hints({{glyphAccept, tr("SELECT")}});
             } else if (screen == Screen::Main) {
                 wall(ui, ink::crt);
