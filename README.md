@@ -32,7 +32,9 @@ desktop tests as a Switch performance benchmark.
 ## Install on a Switch
 
 The ready-to-copy build is in [`release/`](release/). Copy `release/switch-hero`
-into the `switch` folder at the root of the SD card:
+into the `switch` folder at the root of the SD card. The zip on the GitHub
+release is laid out from the SD card root, so its `switch` folder goes straight
+onto the card:
 
 ```text
 sd:/switch/switch-hero/

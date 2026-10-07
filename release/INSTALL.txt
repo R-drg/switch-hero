@@ -7,8 +7,9 @@ You need a Switch that runs homebrew (Atmosphere + the Homebrew Menu).
 1. COPY TO THE SD CARD
 ----------------------
 
-Copy the whole "switch-hero" folder into the "switch" folder at the root
-of your SD card. When you're done it should look like this:
+Unzip the release and copy the "switch" folder to the root of your SD
+card, merging it with the "switch" folder already there. When you're done
+it should look like this:
 
     SD card
     └── switch
@@ -47,7 +48,7 @@ Either:
 4. FIRST TIME SETUP
 -------------------
 
-The first start asks for a language (English or Português).
+The first start asks for a language (English, Português or Español).
 
 Open OPTIONS on the title menu (or Y on the song list):
 
