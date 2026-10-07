@@ -1,4 +1,35 @@
 # Changelog
+## 0.3.1
+
+A small release on top of 0.3: a Spanish translation and classic Guitar Hero
+fret handling for gamepads. It passes the desktop tests and the Switch
+cross-build. The items marked *(hardware)* still need a run on a console.
+
+### Spanish
+- Spanish joins English and Brazilian Portuguese in the language picker
+  (first launch and Options), shown as **Español**. Every string the game
+  translates has a Spanish line, hit ratings included. Contributed by
+  CHSDev360.
+- The "you can change it later in options" line on the language screen moved
+  down so it clears a third menu row.
+
+### Classic gamepad frets *(hardware)*
+- Single notes accept lower frets held under the target, like anchoring on a
+  guitar controller. Pressing the note's own fret hits it as before.
+- With the target fret held, pressing any lower fret re-strikes the same
+  single note, so fast repeated notes can be played by alternating lower
+  frets.
+- HOPO and tap notes can be completed by any fret change that leaves the
+  target as the highest held fret, so releasing a higher fret works as a
+  pull-off. HOPOs still need an active combo; taps do not.
+- Higher frets never count, and chords keep the exact-shape rule. A lower-fret
+  re-strike consumes that press, so one press still hits one note.
+  Contributed by aloumamae.
+
+### Other
+- The title screen and the download user agent show the full version
+  (`v0.3.1`, `switch-hero/0.3.1`) rather than major.minor only.
+
 ## 0.3
 
 The 0.3 release adds split-screen multiplayer, practice mode, solos, a

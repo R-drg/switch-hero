@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SwitchHero VERSION 0.3.0 LANGUAGES CXX)
+project(SwitchHero VERSION 0.3.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -24,7 +24,7 @@ if(SWITCH_HERO_BUILD_GAME)
   add_executable(switch-hero src/main.cpp src/audio.cpp src/look.cpp src/downloader.cpp)
   # One version, from project() above: the title menu and the downloader's
   # User-Agent read it, so they cannot drift from the NRO's metadata.
-  target_compile_definitions(switch-hero PRIVATE SWITCH_HERO_VERSION="${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}")
+  target_compile_definitions(switch-hero PRIVATE SWITCH_HERO_VERSION="${PROJECT_VERSION}")
   target_include_directories(switch-hero PRIVATE vendor)
   target_link_libraries(switch-hero PRIVATE switch_hero_core ${FRET_SDL_TARGET})
   if(NINTENDO_SWITCH)

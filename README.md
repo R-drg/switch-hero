@@ -1,4 +1,4 @@
-# Switch Hero 0.3
+# Switch Hero 0.3.1
 
 A five-fret rhythm game for Nintendo Switch homebrew, written in C++17 and SDL2.
 It plays Clone Hero-style song folders, downloads charts from
@@ -384,7 +384,7 @@ game doesn't play them. The package's metadata becomes `song.ini`.
 
 The Switch needs an internet connection. Networking only starts the first time
 you open the download screen. HTTPS uses the console's own SSL service.
-Requests identify the game as `switch-hero/0.3`.
+Requests identify the game as `switch-hero/0.3.1`.
 
 ### Deleting songs
 
