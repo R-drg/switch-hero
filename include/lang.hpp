@@ -6,14 +6,15 @@
 #include <string>
 
 namespace fret::lang {
-enum class Language { English, Portuguese };
-constexpr int Count = 2;
+enum class Language { English, Portuguese, Spanish };
+constexpr int Count = 3; // Count Lang
 // Each language's own name, as the picker shows it.
 const char *nativeName(Language l);
 
 void set(Language l);
 Language current();
 inline bool portuguese() { return current() == Language::Portuguese; }
+inline bool spanish() { return current() == Language::Spanish; }
 
 const char *tr(const char *english);
 std::string tr(const std::string &english);
