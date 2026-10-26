@@ -357,7 +357,7 @@ const std::tuple<const char *, const char *, const char *> translationTable[] = 
     {"up/down difficulty   left/right part", "cima/baixo dificuldade   esquerda/direita parte", "arriba/abajo dificultad   izquierda/derecha parte"},
     {"press PLUS to start", "aperte MAIS para começar", "pulsa MÁS para empezar"},
     {"at least two players needed", "são precisos pelo menos dois jogadores", "se necesitan al menos dos jugadores"},
-    {"JOIN", "ENTRAR", "UNIRSE"},
+    {"JOIN / NEXT", "ENTRAR / PRÓXIMO", "UNIRSE / SIGUIENTE"},
     {"CHOOSE", "ESCOLHER", "ELEGIR"},
     {"difficulty", "dificuldade", "dificultad"},
     {"highway", "pista", "pista"},

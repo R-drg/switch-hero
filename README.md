@@ -133,7 +133,7 @@ In the lobby every seat is driven by its own controller, all at once:
 | --- | --- |
 | Join / leave | A / B |
 | Pick a row (part, difficulty, highway, note colours) | Up / Down or strum |
-| Change it | Left / Right |
+| Change it | Left / Right, or A (green fret) to step to the next value |
 | Start | Plus |
 
 Each player picks their own instrument, difficulty, highway and note colours,
