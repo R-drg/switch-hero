@@ -132,14 +132,17 @@ In the lobby every seat is driven by its own controller, all at once:
 | Action | Button |
 | --- | --- |
 | Join / leave | A / B |
-| Pick a row (part, difficulty, highway, note colours) | Up / Down or strum |
+| Pick a row (part, difficulty, highway, note colours, hand) | Up / Down or strum |
 | Change it | Left / Right |
 | Start | Plus |
 
 Each player picks their own instrument, difficulty, highway and note colours,
 and gets the hit window their difficulty earns, so an expert and a beginner can
 share a song. Difficulty stepping skips tiers the chart does not carry. The
-highway and colours are kept for the next song.
+**hand** row (Default / Lefty) mirrors only that player's board, so one lefty
+player no longer flips everyone's; player one starts from the Lefty flip
+option and the others start on Default. The highway, colours and hand are kept
+for the next song.
 
 The screen splits side by side for two players and into quadrants for three or
 four; with three, the fourth quadrant is left empty. Each board keeps its own
