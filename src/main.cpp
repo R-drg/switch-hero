@@ -2430,8 +2430,10 @@ int main(int argc, char **argv) {
                         seat.field = (seat.field + seatFields + (pDown ? 1 : -1)) % seatFields;
                         audio.playSfx(Sfx::Move);
                     }
-                    if (pLeft || pRight) {
-                        const int d = pRight ? 1 : -1;
+                    // A Wii guitar has no d-pad left/right: its green fret (accept) steps the
+                    // picked row forward, wrapping round, so every option is reachable.
+                    if (pLeft || pRight || pAccept) {
+                        const int d = pLeft ? -1 : 1;
                         if (seat.field == 0 && !lobbyParts.empty()) {
                             const int n = int(lobbyParts.size());
                             seat.partRow = (seat.partRow + n + d) % n;
@@ -4359,7 +4361,10 @@ int main(int argc, char **argv) {
                 }
                 if (!message.empty())
                     text(60, 690, message, marker(22, messageInk(), -1));
-                hints({{glyphAccept, tr("JOIN")}, {"^v", tr("CHOOSE")}, {"<>", tr("CHANGE")}, {glyphBack, tr("LEAVE")}});
+                hints({{glyphAccept, tr("JOIN / NEXT")},
+                       {"^v", tr("CHOOSE")},
+                       {"<>", tr("CHANGE")},
+                       {glyphBack, tr("LEAVE")}});
             } else if (multi && song) {
                 // During the count-in the board is frozen where the song will
                 // resume, so everyone can see what is about to arrive.
