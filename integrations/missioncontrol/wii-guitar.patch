@@ -195,6 +195,3 @@ index f557c62..278b8ae 100644
              void MapTaTaConExtension(const u8 ext[]);
              void MapBalanceBoardExtension(const u8 ext[]);
              void MapMotionPlusExtension(const u8 ext[]);
--- 
-2.35.1.windows.2
-
